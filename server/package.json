@@ -1,4 +1,12 @@
-{
+
+  {
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Cloudly Backend",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@langchain/textsplitters": "^1.0.1",
