@@ -58,18 +58,32 @@ const authenticate = (req, res, next) => {
 // --- AUTH & RECOVERY ---
 app.post('/api/auth/register', async (req, res) => {
     try {
-        const hashed = await bcrypt.hash(req.body.password, 10);
-        const user = new User({ ...req.body, password: hashed });
-        await user.save(); res.json({ msg: "OK" });
-    } catch (e) { res.status(400).json({ error: "Account exists" }); }
+        const email = req.body.email.toLowerCase().trim();
+        const existingUser = await User.findOne({ email });
+        if (existingUser) return res.status(400).json({ error: "Account exists" });
+
+        const user = new User({ 
+            ...req.body, 
+            email, 
+            password: await bcrypt.hash(req.body.password, 10) 
+        });
+        await user.save(); 
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Server Error" }); }
 });
 
 app.post('/api/auth/login', async (req, res) => {
-    const user = await User.findOne({ email: req.body.email.toLowerCase() });
-    if (!user || !(await bcrypt.compare(req.body.password, user.password))) return res.status(400).json({ error: "Invalid credentials" });
-    res.json({ token: jwt.sign({ id: user._id, email: user.email }, SECRET), userName: user.name });
-});
+    const email = req.body.email.toLowerCase().trim();
+    const user = await User.findOne({ email });
+    
+    if (!user) return res.status(400).json({ error: "User not found" });
 
+    const isMatch = await bcrypt.compare(req.body.password, user.password);
+    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign({ id: user._id, email: user.email }, SECRET);
+    res.json({ token, userName: user.name });
+});
 app.post('/api/auth/forgot-password', async (req, res) => {
     const user = await User.findOne({ email: req.body.email });
     if (!user) return res.status(404).json({ error: "User not found" });
