@@ -26,7 +26,8 @@ app.use(express.json());
 
 
 // Deployment DB name
-mongoose.connect(process.env.MONGO_URI)
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/Cloudly_Local';
+mongoose.connect(MONGO_URI)
   .then(() => console.log("Connected to MongoDB Cloud!"))
   .catch(err => console.log("Cloud Connection Error:", err));
 
