@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-import { HardDrive, Mail, Lock, User } from 'lucide-react';
+import { HardDrive } from 'lucide-react';
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:5000/api";
+const API = "https://cloudly-dj52.onrender.com/api";
 
 const Auth = () => {
     const [isLogin, setIsLogin] = useState(true);
@@ -33,7 +33,7 @@ const Auth = () => {
                     <h2 style={{marginTop:10}}>{isLogin ? 'Login to Cloudly' : 'Create Account'}</h2>
                 </div>
                 <form onSubmit={handleSubmit} style={{display:'flex', flexDirection:'column', gap:15}}>
-                    {!isLogin && <input style={styles.input} placeholder="Full Name" onChange={e=>setForm({...form, name: e.target.value})} required />}
+                    {!isLogin && <input style={styles.input} placeholder="Name" onChange={e=>setForm({...form, name: e.target.value})} required />}
                     <input style={styles.input} type="email" placeholder="Email" onChange={e=>setForm({...form, email: e.target.value})} required />
                     <input style={styles.input} type="password" placeholder="Password" onChange={e=>setForm({...form, password: e.target.value})} required />
                     <button style={styles.btn} type="submit">{isLogin ? 'Sign In' : 'Get Started'}</button>
