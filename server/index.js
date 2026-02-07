@@ -192,5 +192,7 @@ app.post('/api/upload/complete', authenticate, async (req, res) => {
     const file = new File({ fileName: req.body.fileName, fileSize: fs.statSync(tPath).size, path: key, parentFolder: req.body.folderId || null, owner: req.user.id, isVault: req.body.isVault === true });
     await file.save(); fs.unlinkSync(tPath); res.json(file);
 });
-
+app.get('/', (req, res) => {
+    res.send("Cloudly API is Live and Running!");
+});
 app.listen(5000, () => console.log("Startup Engine V10 Running on 5000"));
