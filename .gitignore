@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Security (Passwords & Keys)
+.env
+server/.env
+client/.env.local
+
+# Production Build
+client/build/
+
+# Local Storage/Temporary Files
+server/temp/
+server/uploads/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db

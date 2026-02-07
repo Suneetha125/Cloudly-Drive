@@ -1,0 +1,25 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Environment variables
+.env
+**/.env
+
+# Uploads & temp files
+uploads/
+temp/
+
+# Build outputs
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Executables
+*.exe
+
+# Logs
+*.log
