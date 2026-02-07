@@ -15,12 +15,12 @@ const SECRET = process.env.JWT_SECRET || "REAL_DRIVE_PRO_2026";
 
 // 1. S3/Cloud Storage Setup
 const minioClient = new Minio.Client({
-    endPoint: process.env.S3_ENDPOINT || '127.0.0.1',
-    port: process.env.S3_ENDPOINT ? 443 : 9000,
-    useSSL: !!process.env.S3_ENDPOINT,
-    accessKey: process.env.S3_ACCESS_KEY || 'minioadmin',
-    secretKey: process.env.S3_SECRET_KEY || 'minioadmin',
-    pathStyle: true
+    endPoint: process.env.S3_ENDPOINT, // e.g. 'gcafzbia.supabase.co'
+    port: 443,
+    useSSL: true,
+    accessKey: process.env.S3_ACCESS_KEY,
+    secretKey: process.env.S3_SECRET_KEY,
+    region: process.env.S3_REGION || 'us-east-1'
 });
 const BUCKET_NAME = 'cloudly';
 
