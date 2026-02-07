@@ -17,9 +17,13 @@ const minioClient = new Minio.Client({
     endPoint: '127.0.0.1', port: 9000, useSSL: false,
     accessKey: 'minioadmin', secretKey: 'minioadmin'
 });
-
-app.use(cors());
+app.use(cors({
+    origin: "*", // During startup phase, "*" is easiest to prevent errors.
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    credentials: true
+}));
 app.use(express.json());
+
 
 // Deployment DB name
 mongoose.connect(process.env.MONGO_URI)
