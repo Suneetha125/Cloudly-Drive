@@ -17,7 +17,7 @@ const Auth = () => {
             password: form.password 
         };
         
-        const url = `http://localhost:5000/api/auth/${isLogin ? 'login' : 'register'}`;
+        const url = `https://cloudly-dj52.onrender.com/api/auth/${isLogin ? 'login' : 'register'}`;
         const res = await axios.post(url, isLogin ? loginData : form);
         
         if (isLogin) {

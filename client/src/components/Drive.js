@@ -6,7 +6,8 @@ import {
   MoreVertical, Share2, Shield, LayoutGrid, Eye, Star, Users, Move, Clock, Fingerprint
 } from 'lucide-react';
 
-const API = "http://127.0.0.1:5000/api";
+// const API = "http://127.0.0.1:5000/api";
+const API = "https://cloudly-dj52.onrender.com/api";
 const CHUNK_SIZE = 5 * 1024 * 1024;
 
 const Drive = () => {
