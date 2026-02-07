@@ -21,7 +21,10 @@ const Drive = () => {
     const [isDark, setIsDark] = useState(localStorage.getItem('theme') === 'dark');
     const [moveModal, setMoveModal] = useState(null);
     const [vaultModal, setVaultModal] = useState(false);
+    const [vaultPIN, setVaultPIN] = useState("");
     const [shareModal, setShareModal] = useState(null);
+    const [shareEmail, setShareEmail] = useState("");
+    const [expiryHours, setExpiryHours] = useState(0);
     const [storage, setStorage] = useState({ used: 0, limit: 1 });
 
     const navigate = useNavigate();
@@ -32,10 +35,10 @@ const Drive = () => {
         try {
             const fId = currentFolder ? currentFolder._id : "null";
             const res = await axios.get(`${API}/drive/contents?folderId=${fId}&tab=${activeTab}`, authConfig());
-            setFilesList(res.data.files); setFoldersList(res.data.folders);
+            setFilesList(res.data.files || []); setFoldersList(res.data.folders || []);
             const sRes = await axios.get(`${API}/drive/storage`, authConfig());
             setStorage(sRes.data);
-        } catch (err) { navigate('/'); }
+        } catch (err) { if(err.response?.status === 401) navigate('/'); }
     }, [currentFolder, activeTab, authConfig, navigate]);
 
     useEffect(() => { fetchData(); }, [fetchData]);
@@ -45,18 +48,19 @@ const Drive = () => {
         for (let file of files) {
             const init = await axios.post(`${API}/upload/initialize`, {}, authConfig());
             const chunks = Math.ceil(file.size / CHUNK_SIZE);
-            const promises = [];
             for (let i = 0; i < chunks; i++) {
                 const fd = new FormData();
                 fd.append('chunk', file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
                 fd.append('uploadId', init.data.uploadId); fd.append('fileName', file.name);
-                promises.push(axios.post(`${API}/upload/chunk`, fd, authConfig()));
+                await axios.post(`${API}/upload/chunk`, fd, authConfig());
             }
-            await Promise.all(promises); // Parallel Speed
             await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId: init.data.uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault' }, authConfig());
         }
         fetchData();
     };
+
+    const handleLogout = () => { localStorage.clear(); navigate('/'); };
+    const handleDeleteAccount = async () => { if(window.confirm("Delete account permanently?")) { await axios.delete(`${API}/auth/delete-account`, authConfig()); handleLogout(); } };
 
     const theme = { bg: isDark ? '#0f172a' : '#f8fafc', card: isDark ? '#1e293b' : '#ffffff', text: isDark ? '#f1f5f9' : '#1e293b', border: isDark ? '#334155' : '#e2e8f0', accent: '#3b82f6' };
 
@@ -70,14 +74,13 @@ const Drive = () => {
                 <div style={activeTab === 'starred' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
                 <div style={activeTab === 'trash' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('trash')}><Trash2 size={20}/> Trash</div>
                 <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={async ()=>{ const res = await axios.get(`${API}/vault/status`, authConfig()); setVaultModal({ setup: !res.data.hasPIN }); }}><Shield size={20} color="#ef4444"/> Private Vault</div>
-                
                 <div style={{ marginTop: 'auto', padding: '20px', background: theme.card, borderRadius: '12px', border: `1px solid ${theme.border}`, color: '#000' }}>
-                    <p style={{fontSize:12}}>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / 50GB</p>
+                    <p style={{fontSize:12}}>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / 100GB</p>
                     <div style={styles.bar}><div style={{width:`${(storage.used/storage.limit)*100}%`, height:'100%', background:theme.accent}}></div></div>
                 </div>
             </aside>
 
-            {/* Main */}
+            {/* Main Area */}
             <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <header style={{ height: '80px', padding: '0 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${theme.border}` }}>
                     <div style={styles.searchBar}><Search size={18} color="#94a3b8"/><input placeholder="Search files..." style={{border:'none', background:'transparent', marginLeft:15, width:'100%', outline:'none', color:theme.text}} /></div>
@@ -87,8 +90,8 @@ const Drive = () => {
                         {profileOpen && (
                             <div style={{...styles.profileDrop, backgroundColor:theme.card, border:`1px solid ${theme.border}`}}>
                                 <p style={{fontWeight:'bold'}}>Hi, {userName}!</p>
-                                <button onClick={async ()=>{ if(window.confirm("Delete account?")) { await axios.delete(`${API}/auth/delete-account`, authConfig()); localStorage.clear(); navigate('/'); } }} style={{...styles.logoutBtn, color:'red'}}><UserX size={16}/> Delete Account</button>
-                                <button onClick={()=>{localStorage.clear(); navigate('/')}} style={styles.logoutBtn}><LogOut size={16}/> Sign out</button>
+                                <button onClick={handleDeleteAccount} style={{...styles.logoutBtn, color:'red'}}><UserX size={16}/> Delete Account</button>
+                                <button onClick={handleLogout} style={styles.logoutBtn}><LogOut size={16}/> Sign out</button>
                             </div>
                         )}
                     </div>
@@ -127,7 +130,7 @@ const Drive = () => {
                                     <div style={{...styles.drop, backgroundColor: theme.card, border:`1px solid ${theme.border}`}}>
                                         <div onClick={(e)=>{e.stopPropagation(); axios.get(`${API}/files/preview/${f._id}`, authConfig()).then(res => setPreviewFile(res.data.url))}}><Eye size={14}/> Open</div>
                                         <div onClick={(e)=>{e.stopPropagation(); setShareModal(f)}}><Share2 size={14}/> Manage Access</div>
-                                        <div onClick={(e)=>{e.stopPropagation(); setMoveModal(f)}}><Move size={14}/> Move</div>
+                                        <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Target Folder ID:"); axios.patch(`${API}/files/move`, {fileId:f._id, targetId:tid}, authConfig()).then(fetchData)}}><Move size={14}/> Move</div>
                                         <div style={{color:'red'}} onClick={(e)=>{e.stopPropagation(); axios.delete(`${API}/files/${f._id}`,authConfig()).then(fetchData)}}><Trash2 size={14}/> Delete</div>
                                     </div>
                                 )}
@@ -143,9 +146,9 @@ const Drive = () => {
                     <div style={{...styles.modalSmall, backgroundColor: theme.card}} onClick={e=>e.stopPropagation()}>
                         <Shield size={48} color="#ef4444" style={{margin:'0 auto 20px', display:'block'}}/>
                         <h3>{vaultModal.setup ? "Setup Vault PIN" : "Unlock Vault"}</h3>
-                        <input type="password" id="vpin" maxLength={4} style={styles.pinInput} placeholder="****" />
+                        <input type="password" id="vpin" maxLength={4} style={styles.pinInput} placeholder="****" onChange={e=>setVaultPIN(e.target.value)}/>
                         <button onClick={async ()=>{ const p=document.getElementById('vpin').value; await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig()); setVaultModal(false); setActiveTab('vault'); }} style={styles.btnBluePro}>Unlock</button>
-                        <button onClick={()=>{alert("Biometric Handshake..."); setVaultModal(false); setActiveTab('vault');}} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
+                        <button onClick={()=>{alert("Biometrics Handshake..."); setVaultModal(false); setActiveTab('vault');}} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
                     </div>
                 </div>
             )}
@@ -157,20 +160,9 @@ const Drive = () => {
                         <h3>Manage Access</h3>
                         <input id="semail" placeholder="Email" style={styles.miniInput}/>
                         <select id="shours" style={styles.miniInput}>
-                            <option value="0">Permanent</option><option value="1">1 Hour</option><option value="24">24 Hours</option>
+                            <option value="0">Permanent Access</option><option value="1">1 Hour</option><option value="24">24 Hours</option>
                         </select>
                         <button onClick={async ()=>{ await axios.post(`${API}/files/share`, {fileId:shareModal._id, email:document.getElementById('semail').value, hours:document.getElementById('shours').value}, authConfig()); setShareModal(null); alert("Shared!"); }} style={styles.btnBluePro}>Grant Access</button>
-                    </div>
-                </div>
-            )}
-
-            {/* MOVE MODAL */}
-            {moveModal && (
-                <div style={styles.overlay} onClick={()=>setMoveModal(null)}>
-                    <div style={{...styles.modalSmall, backgroundColor: theme.card}} onClick={e=>e.stopPropagation()}>
-                        <h3>Move to...</h3>
-                        <div onClick={async ()=>{ await axios.patch(`${API}/files/move`, {fileId:moveModal._id, targetId:'root'}, authConfig()); setMoveModal(null); fetchData(); }} style={styles.moveOption}>Root</div>
-                        {foldersList.map(folder => <div key={folder._id} onClick={async ()=>{ await axios.patch(`${API}/files/move`, {fileId:moveModal._id, targetId:folder._id}, authConfig()); setMoveModal(null); fetchData(); }} style={styles.moveOption}>{folder.name}</div>)}
                     </div>
                 </div>
             )}
@@ -187,7 +179,7 @@ const styles = {
     btnBlue: { background:'#1a73e8', color:'#fff', padding:'12px 24px', borderRadius:'24px', cursor:'pointer', display:'flex', gap:10, fontWeight:'500' },
     btnBluePro: { background:'#1a73e8', color:'#fff', border:'none', width:'100%', padding:12, borderRadius:8, cursor:'pointer', fontWeight:'bold' },
     btnWhitePro: { background:'transparent', border:'1px solid #dadce0', padding:10, borderRadius:8, cursor:'pointer' },
-    grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:25 },
+    grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:25 },
     card: { padding:'30px 20px', borderRadius:'16px', border:'1px solid', textAlign:'center', position:'relative', cursor:'pointer' },
     dots: { position:'absolute', top:15, right:15, color:'#5f6368', cursor:'pointer' },
     drop: { position:'absolute', top:40, right:15, borderRadius:8, boxShadow:'0 4px 6px rgba(0,0,0,0.1)', zIndex:100, padding:10, width:150, display:'flex', flexDirection:'column', gap:10, fontSize:13, textAlign:'left', border:'1px solid #eee' },
@@ -196,11 +188,11 @@ const styles = {
     miniInput: { width:'100%', padding:12, borderRadius:8, border:'1px solid #ddd', marginBottom:15, outline:'none', boxSizing:'border-box' },
     profileDrop: { position:'absolute', top:45, right:0, width:220, borderRadius:20, boxShadow:'0 4px 15px rgba(0,0,0,0.1)', zIndex:3000, padding:20 },
     logoutBtn: { background:'none', border:'1px solid #dadce0', padding:'10px 20px', borderRadius:10, cursor:'pointer', width:'100%', marginTop:10, display:'flex', alignItems:'center', gap:8, fontSize:12 },
+    storageBox: { marginTop: 'auto', padding: '20px', background: '#fff', borderRadius: '15px', border: '1px solid #e2e8f0', color: '#000' },
     bar: { height:6, background:'#eee', borderRadius:10, marginTop:10, overflow:'hidden' },
     pinInput: { width:'100%', padding:12, borderRadius:8, border:'1px solid #ddd', marginBottom:15, textAlign:'center', fontSize:24, letterSpacing:10 },
     searchBar: { background: '#fff', width: '500px', padding: '12px 20px', borderRadius: '12px', display:'flex', alignItems:'center', border:'1px solid #e2e8f0' },
-    breadcrumb: { display:'flex', alignItems:'center', gap:10, fontSize:18, marginBottom:30 },
-    moveOption: { padding:10, borderRadius:8, cursor:'pointer', borderBottom:'1px solid #eee' }
+    breadcrumb: { display:'flex', alignItems:'center', gap:10, fontSize:18, marginBottom:30 }
 };
 
 export default Drive;
