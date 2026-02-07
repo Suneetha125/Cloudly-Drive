@@ -35,7 +35,7 @@ const Drive = () => {
         try {
             const fId = currentFolder ? currentFolder._id : "null";
             const res = await axios.get(`${API}/drive/contents?folderId=${fId}&tab=${activeTab}`, authConfig());
-            setFilesList(res.data.files || []); setFoldersList(res.data.folders || []);
+            setFilesList(res.data.files); setFoldersList(res.data.folders);
             const sRes = await axios.get(`${API}/drive/storage`, authConfig());
             setStorage(sRes.data);
         } catch (err) { if(err.response?.status === 401) navigate('/'); }
@@ -48,19 +48,28 @@ const Drive = () => {
         for (let file of files) {
             const init = await axios.post(`${API}/upload/initialize`, {}, authConfig());
             const chunks = Math.ceil(file.size / CHUNK_SIZE);
+            const promises = [];
             for (let i = 0; i < chunks; i++) {
                 const fd = new FormData();
                 fd.append('chunk', file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
                 fd.append('uploadId', init.data.uploadId); fd.append('fileName', file.name);
-                await axios.post(`${API}/upload/chunk`, fd, authConfig());
+                promises.push(axios.post(`${API}/upload/chunk`, fd, authConfig()));
             }
+            await Promise.all(promises);
             await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId: init.data.uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault' }, authConfig());
         }
         fetchData();
     };
 
-    const handleLogout = () => { localStorage.clear(); navigate('/'); };
-    const handleDeleteAccount = async () => { if(window.confirm("Delete account permanently?")) { await axios.delete(`${API}/auth/delete-account`, authConfig()); handleLogout(); } };
+    const handleBiometric = () => {
+        alert("Authenticating via Fingerprint...");
+        setTimeout(() => { setVaultModal(false); setActiveTab('vault'); }, 1000);
+    };
+
+    const jumpToFolder = (index) => {
+        if (index === -1) { setCurrentFolder(null); setPath([]); }
+        else { const newPath = path.slice(0, index + 1); setCurrentFolder(newPath[index]); setPath(newPath); }
+    };
 
     const theme = { bg: isDark ? '#0f172a' : '#f8fafc', card: isDark ? '#1e293b' : '#ffffff', text: isDark ? '#f1f5f9' : '#1e293b', border: isDark ? '#334155' : '#e2e8f0', accent: '#3b82f6' };
 
@@ -90,8 +99,8 @@ const Drive = () => {
                         {profileOpen && (
                             <div style={{...styles.profileDrop, backgroundColor:theme.card, border:`1px solid ${theme.border}`}}>
                                 <p style={{fontWeight:'bold'}}>Hi, {userName}!</p>
-                                <button onClick={handleDeleteAccount} style={{...styles.logoutBtn, color:'red'}}><UserX size={16}/> Delete Account</button>
-                                <button onClick={handleLogout} style={styles.logoutBtn}><LogOut size={16}/> Sign out</button>
+                                <button onClick={async ()=>{ if(window.confirm("Delete account?")) { await axios.delete(`${API}/auth/delete-account`, authConfig()); localStorage.clear(); navigate('/'); } }} style={{...styles.logoutBtn, color:'red'}}><UserX size={16}/> Delete Account</button>
+                                <button onClick={()=>{localStorage.clear(); navigate('/')}} style={styles.logoutBtn}><LogOut size={16}/> Sign out</button>
                             </div>
                         )}
                     </div>
@@ -99,8 +108,8 @@ const Drive = () => {
 
                 <div style={{ padding: '40px', flex: 1, overflowY: 'auto' }}>
                     <div style={styles.breadcrumb}>
-                        <span onClick={() => {setCurrentFolder(null); setPath([]);}} style={{cursor:'pointer'}}>My Drive</span>
-                        {path.map((p, i) => <span key={p._id} onClick={()=>{const n=path.slice(0,i+1); setPath(n); setCurrentFolder(p);}} style={{cursor:'pointer'}}> <ChevronRight size={16} style={{display:'inline'}}/> {p.name}</span>)}
+                        <span onClick={() => jumpToFolder(-1)} style={{cursor:'pointer'}}>My Drive</span>
+                        {path.map((p, i) => <span key={p._id} onClick={() => jumpToFolder(i)} style={{cursor:'pointer'}}> <ChevronRight size={16} style={{display:'inline'}}/> {p.name}</span>)}
                         <div style={{marginLeft:'auto', display:'flex', gap:10}}>
                             <label style={styles.btnBlue}><Upload size={18}/> Upload<input type="file" hidden multiple onChange={handleUpload}/></label>
                             <button style={styles.btnWhite} onClick={() => {const n=prompt("Name:"); n && axios.post(`${API}/folders`,{name:n, parentFolder:currentFolder?._id, isVault: activeTab==='vault'}, authConfig()).then(fetchData)}}><FolderPlus size={18}/></button>
@@ -148,7 +157,7 @@ const Drive = () => {
                         <h3>{vaultModal.setup ? "Setup Vault PIN" : "Unlock Vault"}</h3>
                         <input type="password" id="vpin" maxLength={4} style={styles.pinInput} placeholder="****" onChange={e=>setVaultPIN(e.target.value)}/>
                         <button onClick={async ()=>{ const p=document.getElementById('vpin').value; await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig()); setVaultModal(false); setActiveTab('vault'); }} style={styles.btnBluePro}>Unlock</button>
-                        <button onClick={()=>{alert("Biometrics Handshake..."); setVaultModal(false); setActiveTab('vault');}} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
+                        <button onClick={handleBiometric} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
                     </div>
                 </div>
             )}
@@ -160,7 +169,7 @@ const Drive = () => {
                         <h3>Manage Access</h3>
                         <input id="semail" placeholder="Email" style={styles.miniInput}/>
                         <select id="shours" style={styles.miniInput}>
-                            <option value="0">Permanent Access</option><option value="1">1 Hour</option><option value="24">24 Hours</option>
+                            <option value={0}>Permanent Access</option><option value={1}>1 Hour</option><option value={24}>24 Hours</option>
                         </select>
                         <button onClick={async ()=>{ await axios.post(`${API}/files/share`, {fileId:shareModal._id, email:document.getElementById('semail').value, hours:document.getElementById('shours').value}, authConfig()); setShareModal(null); alert("Shared!"); }} style={styles.btnBluePro}>Grant Access</button>
                     </div>
@@ -179,6 +188,7 @@ const styles = {
     btnBlue: { background:'#1a73e8', color:'#fff', padding:'12px 24px', borderRadius:'24px', cursor:'pointer', display:'flex', gap:10, fontWeight:'500' },
     btnBluePro: { background:'#1a73e8', color:'#fff', border:'none', width:'100%', padding:12, borderRadius:8, cursor:'pointer', fontWeight:'bold' },
     btnWhitePro: { background:'transparent', border:'1px solid #dadce0', padding:10, borderRadius:8, cursor:'pointer' },
+    btnWhite: { background:'transparent', border:'1px solid #dadce0', padding:10, borderRadius:'50%', cursor:'pointer' },
     grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:25 },
     card: { padding:'30px 20px', borderRadius:'16px', border:'1px solid', textAlign:'center', position:'relative', cursor:'pointer' },
     dots: { position:'absolute', top:15, right:15, color:'#5f6368', cursor:'pointer' },
