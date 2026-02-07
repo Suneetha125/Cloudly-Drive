@@ -3,10 +3,9 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { 
   FolderPlus, Upload, Trash2, FileText, Search, LogOut, Folder, X, ChevronRight, Sun, Moon, 
-  MoreVertical, Share2, HardDrive, Users, Star, Shield, LayoutGrid, Eye, Fingerprint, Move
+  MoreVertical, Share2, HardDrive, Users, Star, Shield, LayoutGrid, Eye, Fingerprint, Move, UserX
 } from 'lucide-react';
 
-// HARDCODED FOR YOUR DEPLOYMENT
 const API = "https://cloudly-dj52.onrender.com/api";
 const CHUNK_SIZE = 5 * 1024 * 1024;
 
@@ -19,9 +18,12 @@ const Drive = () => {
     const [previewFile, setPreviewFile] = useState(null);
     const [activeMenu, setActiveMenu] = useState(null);
     const [profileOpen, setProfileOpen] = useState(false);
-    const [isDark, setIsDark] = useState(localStorage.getItem('theme') === 'dark');
+    const [isDark, setIsDark] = useState(false);
     const [moveModal, setMoveModal] = useState(null);
     const [vaultModal, setVaultModal] = useState(false);
+    const [shareModal, setShareModal] = useState(null);
+    const [shareEmail, setShareEmail] = useState("");
+    const [expiryHours, setExpiryHours] = useState(0);
     const [storage, setStorage] = useState({ used: 0, limit: 1 });
 
     const navigate = useNavigate();
@@ -44,21 +46,26 @@ const Drive = () => {
         const files = Array.from(e.target.files);
         for (let file of files) {
             const init = await axios.post(`${API}/upload/initialize`, {}, authConfig());
-            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-            for (let i = 0; i < totalChunks; i++) {
+            const chunks = Math.ceil(file.size / CHUNK_SIZE);
+            const promises = [];
+            for (let i = 0; i < chunks; i++) {
                 const fd = new FormData();
                 fd.append('chunk', file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
                 fd.append('uploadId', init.data.uploadId); fd.append('fileName', file.name);
-                await axios.post(`${API}/upload/chunk`, fd, authConfig());
+                promises.push(axios.post(`${API}/upload/chunk`, fd, authConfig()));
             }
+            await Promise.all(promises);
             await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId: init.data.uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault' }, authConfig());
         }
         fetchData();
     };
 
-    const handleBiometric = () => {
-        alert("Authenticating via Fingerprint...");
-        setTimeout(() => { setVaultModal(false); setActiveTab('vault'); }, 1000);
+    const handleDeleteAccount = async () => {
+        if (window.confirm("WARNING: This will delete your account and ALL your files permanently. Proceed?")) {
+            await axios.delete(`${API}/auth/delete-account`, authConfig());
+            localStorage.clear();
+            navigate('/');
+        }
     };
 
     const theme = { bg: isDark ? '#0f172a' : '#f8fafc', card: isDark ? '#1e293b' : '#ffffff', text: isDark ? '#f1f5f9' : '#1e293b', border: isDark ? '#334155' : '#e2e8f0', accent: '#3b82f6' };
@@ -71,9 +78,10 @@ const Drive = () => {
                 <div style={activeTab === 'files' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('files')}><LayoutGrid size={20}/> My Drive</div>
                 <div style={activeTab === 'shared' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('shared')}><Users size={20}/> Shared</div>
                 <div style={activeTab === 'starred' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
-                <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={() => setVaultModal(true)}><Shield size={20} color="#ef4444"/> Vault</div>
-                <div style={{ marginTop: 'auto', padding: '20px', background: theme.card, borderRadius: '12px', border: `1px solid ${theme.border}`, color: '#000' }}>
-                    <p style={{fontSize:12}}>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / 100GB</p>
+                <div style={activeTab === 'trash' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('trash')}><Trash2 size={20}/> Trash</div>
+                <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={() => setVaultModal(true)}><Shield size={20} color="#ef4444"/> Private Vault</div>
+                <div style={styles.storageBox}>
+                    <p>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / 100GB</p>
                     <div style={styles.bar}><div style={{width:`${(storage.used/storage.limit)*100}%`, height:'100%', background:theme.accent}}></div></div>
                 </div>
             </aside>
@@ -82,12 +90,13 @@ const Drive = () => {
             <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <header style={{ height: '80px', padding: '0 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${theme.border}` }}>
                     <div style={styles.searchBar}><Search size={18} color="#94a3b8"/><input placeholder="Search files..." style={{border:'none', background:'transparent', marginLeft:15, width:'100%', outline:'none', color:theme.text}} /></div>
+                    
                     <div style={{ display: 'flex', gap: '20px', alignItems: 'center', position:'relative' }}>
-                        <button onClick={(e)=>{e.stopPropagation(); setIsDark(!isDark)}} style={{background:'none', border:'none', cursor:'pointer', color:theme.text}}>{isDark?<Sun/>:<Moon/>}</button>
                         <div style={styles.userCircle} onClick={(e)=>{e.stopPropagation(); setProfileOpen(!profileOpen)}}>{userName[0]}</div>
                         {profileOpen && (
                             <div style={{...styles.profileDrop, backgroundColor:theme.card, border:`1px solid ${theme.border}`}}>
                                 <p style={{fontWeight:'bold'}}>Hi, {userName}!</p>
+                                <button onClick={handleDeleteAccount} style={{...styles.logoutBtn, color:'red', borderColor:'red'}}><UserX size={16}/> Delete Account</button>
                                 <button onClick={()=>{localStorage.clear(); navigate('/')}} style={styles.logoutBtn}><LogOut size={16}/> Sign out</button>
                             </div>
                         )}
@@ -127,6 +136,7 @@ const Drive = () => {
                                     <div style={{...styles.drop, backgroundColor: theme.card, border:`1px solid ${theme.border}`}}>
                                         <div onClick={(e)=>{e.stopPropagation(); axios.get(`${API}/files/preview/${f._id}`, authConfig()).then(res => setPreviewFile(res.data.url))}}><Eye size={14}/> Open</div>
                                         <div onClick={(e)=>{e.stopPropagation(); setMoveModal(f)}}><Move size={14}/> Move</div>
+                                        <div onClick={(e)=>{e.stopPropagation(); setShareModal(f)}}><Share2 size={14}/> Manage Access</div>
                                         <div style={{color:'red'}} onClick={(e)=>{e.stopPropagation(); axios.delete(`${API}/files/${f._id}`,authConfig()).then(fetchData)}}><Trash2 size={14}/> Delete</div>
                                     </div>
                                 )}
@@ -144,12 +154,27 @@ const Drive = () => {
                         <h3>Unlock Vault</h3>
                         <input type="password" maxLength={4} style={styles.pinInput} placeholder="****" id="vpin"/>
                         <button onClick={()=>{const p=document.getElementById('vpin').value; axios.post(`${API}/vault/unlock`, {pin:p}, authConfig()).then(()=> {setActiveTab('vault'); setVaultModal(false);})}} style={styles.btnBluePro}>Unlock</button>
-                        <button onClick={handleBiometric} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
+                        <button onClick={()=>{alert("Simulating Fingerprint..."); setTimeout(()=>{setActiveTab('vault'); setVaultModal(false);}, 1000)}} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
                     </div>
                 </div>
             )}
 
+            {/* PREVIEW MODAL */}
             {previewFile && <div style={styles.overlay} onClick={()=>setPreviewFile(null)}><div style={{width:'80%', height:'80%'}}><embed src={previewFile} width="100%" height="100%"/></div></div>}
+            
+            {/* SHARE MODAL */}
+            {shareModal && (
+                <div style={styles.overlay} onClick={()=>setShareModal(null)}>
+                    <div style={{...styles.modalSmall, backgroundColor: theme.card}} onClick={e=>e.stopPropagation()}>
+                        <h3>Manage Access</h3>
+                        <input style={styles.miniInput} placeholder="Email" value={shareEmail} onChange={e=>setShareEmail(e.target.value)}/>
+                        <select style={styles.miniInput} value={expiryHours} onChange={e=>setExpiryHours(e.target.value)}>
+                            <option value={0}>Permanent Access</option><option value={1}>1 Hour</option><option value={24}>24 Hours</option>
+                        </select>
+                        <button onClick={handleShare} style={styles.btnBluePro}>Grant Access</button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -165,12 +190,13 @@ const styles = {
     grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:25 },
     card: { padding:'30px 20px', borderRadius:'16px', border:'1px solid', textAlign:'center', position:'relative', cursor:'pointer' },
     dots: { position:'absolute', top:15, right:15, color:'#5f6368', cursor:'pointer' },
-    drop: { position:'absolute', top:40, right:15, borderRadius:8, boxShadow:'0 4px 6px rgba(0,0,0,0.1)', zIndex:100, padding:10, width:150, display:'flex', flexDirection:'column', gap:10, fontSize:13, textAlign:'left', border:'1px solid #eee' },
+    drop: { position:'absolute', top:40, right:15, borderRadius:8, boxShadow:'0 4px 6px rgba(0,0,0,0.1)', zIndex:100, padding:10, width:160, display:'flex', flexDirection:'column', gap:10, fontSize:13, textAlign:'left', border:'1px solid #eee' },
     overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' },
     modalSmall: { width:350, padding:30, borderRadius:20 },
-    miniInput: { width:'100%', padding:12, borderRadius:8, border:'1px solid #ddd', marginBottom:15, outline:'none' },
-    profileDrop: { position:'absolute', top:45, right:0, width:200, borderRadius:20, boxShadow:'0 4px 15px rgba(0,0,0,0.1)', zIndex:3000, padding:20 },
-    logoutBtn: { background:'none', border:'1px solid #dadce0', padding:'10px 20px', borderRadius:10, cursor:'pointer', width:'100%', marginTop:15 },
+    miniInput: { width:'100%', padding:12, borderRadius:8, border:'1px solid #ddd', marginBottom:15, outline:'none', boxSizing:'border-box' },
+    profileDrop: { position:'absolute', top:45, right:0, width:220, borderRadius:20, boxShadow:'0 4px 15px rgba(0,0,0,0.1)', zIndex:3000, padding:20 },
+    logoutBtn: { background:'none', border:'1px solid #dadce0', padding:'10px 15px', borderRadius:10, cursor:'pointer', width:'100%', marginTop:10, display:'flex', alignItems:'center', gap:8, fontSize:12 },
+    storageBox: { marginTop: 'auto', padding: '20px', background: '#fff', borderRadius: '15px', border: '1px solid #e2e8f0', color: '#000' },
     bar: { height:6, background:'#eee', borderRadius:10, marginTop:10, overflow:'hidden' },
     pinInput: { width:'100%', padding:12, borderRadius:8, border:'1px solid #ddd', marginBottom:15, textAlign:'center', fontSize:24, letterSpacing:10 },
     searchBar: { background: '#fff', width: '500px', padding: '12px 20px', borderRadius: '12px', display:'flex', alignItems:'center', border:'1px solid #e2e8f0' },
