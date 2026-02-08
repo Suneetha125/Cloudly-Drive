@@ -25,7 +25,7 @@ const minioClient = new Minio.Client({
 });
 const BUCKET_NAME = 'cloudly';
 
-// 2. Email Setup for OTP
+// 2. Email Transporter for OTP
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
@@ -34,9 +34,7 @@ const transporter = nodemailer.createTransport({
 app.use(cors());
 app.use(express.json());
 
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("Connected to MongoDB Cloud!"))
-  .catch(err => console.log("DB Connection Error:", err));
+mongoose.connect(process.env.MONGO_URI);
 
 // 3. SCHEMAS
 const User = mongoose.model('User', { 
@@ -54,17 +52,20 @@ const authenticate = (req, res, next) => {
     try { req.user = jwt.verify(token, SECRET); next(); } catch (err) { res.status(401).send("Invalid"); }
 };
 
-// --- AUTH & IDENTITY (OTP ONLY) ---
+// --- AUTH & OTP (NO PASSWORD IN EMAIL) ---
 app.post('/api/auth/register', async (req, res) => {
     try {
         const email = req.body.email.toLowerCase().trim();
+        const exists = await User.findOne({ email });
+        if (exists) return res.status(400).json({ error: "Account exists" });
+        
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        // Password is created here and hashed, but NOT sent to email
         const user = new User({ ...req.body, email, password: await bcrypt.hash(req.body.password, 10), otp, otpExpires: Date.now() + 600000 });
         await user.save();
-        await transporter.sendMail({ to: email, subject: "Cloudly Verification Code", text: `Your security code is: ${otp}` });
+        
+        await transporter.sendMail({ to: email, subject: "Cloudly OTP", text: `Your verification code is: ${otp}` });
         res.json({ msg: "OTP Sent" });
-    } catch (e) { res.status(400).json({ error: "Account exists" }); }
+    } catch (e) { res.status(400).json({ error: "Registration failed" }); }
 });
 
 app.post('/api/auth/verify', async (req, res) => {
@@ -75,12 +76,12 @@ app.post('/api/auth/verify', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-    const user = await User.findOne({ email: req.body.email.toLowerCase() });
+    const email = req.body.email.toLowerCase().trim();
+    const user = await User.findOne({ email });
     if (!user || !user.isVerified || !(await bcrypt.compare(req.body.password, user.password))) return res.status(400).json({ error: "Invalid credentials or unverified" });
     res.json({ token: jwt.sign({ id: user._id, email: user.email }, SECRET), userName: user.name });
 });
 
-// --- ACCOUNT PRIVACY ---
 app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     const userId = req.user.id;
     const files = await File.find({ owner: userId });
@@ -91,24 +92,15 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     res.json({ success: true });
 });
 
-// --- VAULT & BIOMETRICS ---
-app.get('/api/vault/status', authenticate, async (req, res) => {
-    const user = await User.findById(req.user.id);
-    res.json({ hasPIN: !!user.vaultPIN });
-});
-
+// --- VAULT ---
 app.post('/api/vault/unlock', authenticate, async (req, res) => {
     const user = await User.findById(req.user.id);
-    if (!user.vaultPIN) { 
-        user.vaultPIN = await bcrypt.hash(req.body.pin, 10); 
-        await user.save(); 
-        return res.json({ unlocked: true, setup: true }); 
-    }
+    if (!user.vaultPIN) { user.vaultPIN = await bcrypt.hash(req.body.pin, 10); await user.save(); return res.json({ unlocked: true }); }
     if (await bcrypt.compare(req.body.pin, user.vaultPIN)) res.json({ unlocked: true });
     else res.status(403).send("Wrong PIN");
 });
 
-// --- FILE MANAGEMENT (MOVE, STAR, TRASH) ---
+// --- FILE MANAGEMENT ---
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     const { folderId, tab } = req.query;
     let filter = { owner: req.user.id };
@@ -132,13 +124,12 @@ app.patch('/api/files/move', authenticate, async (req, res) => {
 });
 
 app.post('/api/files/share', authenticate, async (req, res) => {
-    const { fileId, email, hours } = req.body;
-    const expiry = hours > 0 ? new Date(Date.now() + hours * 3600000) : null;
-    await File.findByIdAndUpdate(fileId, { $push: { sharedWith: { email: email.toLowerCase(), expiresAt: expiry } } });
+    const expiry = req.body.hours > 0 ? new Date(Date.now() + req.body.hours * 3600000) : null;
+    await File.findByIdAndUpdate(req.body.fileId, { $push: { sharedWith: { email: req.body.email.toLowerCase(), expiresAt: expiry } } });
     res.json({ msg: "OK" });
 });
 
-// --- UPLOAD & PREVIEW ---
+// --- UPLOAD & SYSTEM ---
 const upload = multer({ dest: '/tmp/' });
 app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
 app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
@@ -164,4 +155,4 @@ app.get('/api/drive/storage', authenticate, async (req, res) => {
     res.json({ used: files.reduce((acc, f) => acc + f.fileSize, 0), limit: 107374182400 });
 });
 
-app.listen(process.env.PORT || 5000, () => console.log("Enterprise Backend Ready"));
+app.listen(process.env.PORT || 5000, () => console.log("Server Running"));
