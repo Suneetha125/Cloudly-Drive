@@ -52,102 +52,67 @@ const authenticate = (req, res, next) => {
     try { req.user = jwt.verify(token, SECRET); next(); } catch (err) { res.status(401).send("Invalid"); }
 };
 
-// --- AUTH & RECOVERY LOGIC ---
-
+// --- AUTH & IDENTITY ---
 app.post('/api/auth/register', async (req, res) => {
     try {
         const email = req.body.email.toLowerCase().trim();
+        const exists = await User.findOne({ email });
+        if (exists) return res.status(400).json({ error: "Account already exists" });
+        
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        // Create user with CUSTOM password
         const user = new User({ ...req.body, email, password: await bcrypt.hash(req.body.password, 10), otp, otpExpires: Date.now() + 600000 });
         await user.save();
-        await transporter.sendMail({ to: email, subject: "Cloudly OTP", text: `Your verification code: ${otp}` });
+        
+        await transporter.sendMail({ to: email, subject: "Cloudly OTP", text: `Your verification code is: ${otp}` });
         res.json({ msg: "OTP Sent" });
-    } catch (e) { res.status(400).json({ error: "Account exists" }); }
-});
-
-app.post('/api/auth/forgot-password', async (req, res) => {
-    const email = req.body.email.toLowerCase().trim();
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ error: "User not found" });
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.otp = otp; user.otpExpires = Date.now() + 600000;
-    await user.save();
-    await transporter.sendMail({ to: email, subject: "Password Reset OTP", text: `Your reset code: ${otp}` });
-    res.json({ msg: "OTP Sent" });
-});
-
-app.post('/api/auth/reset-password', async (req, res) => {
-    const { email, otp, newPassword } = req.body;
-    const user = await User.findOne({ email: email.toLowerCase(), otp, otpExpires: { $gt: Date.now() } });
-    if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
-    user.password = await bcrypt.hash(newPassword, 10);
-    user.otp = undefined; await user.save();
-    res.json({ success: true });
+    } catch (e) { res.status(400).json({ error: "Registration failed" }); }
 });
 
 app.post('/api/auth/verify', async (req, res) => {
     const user = await User.findOne({ email: req.body.email.toLowerCase(), otp: req.body.otp, otpExpires: { $gt: Date.now() } });
-    if (!user) return res.status(400).json({ error: "Invalid OTP" });
+    if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
     user.isVerified = true; user.otp = undefined; await user.save();
     res.json({ success: true });
 });
 
 app.post('/api/auth/login', async (req, res) => {
-    const user = await User.findOne({ email: req.body.email.toLowerCase() });
-    if (!user || !user.isVerified || !(await bcrypt.compare(req.body.password, user.password))) return res.status(400).json({ error: "Invalid credentials or unverified" });
-    res.json({ token: jwt.sign({ id: user._id, email: user.email }, SECRET), userName: user.name });
+    const email = req.body.email.toLowerCase().trim();
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: "User not found" });
+    if (!user.isVerified) return res.status(400).json({ error: "Email not verified" });
+
+    const isMatch = await bcrypt.compare(req.body.password, user.password);
+    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign({ id: user._id, email: user.email }, SECRET);
+    res.json({ token, userName: user.name });
 });
 
-// --- ACCOUNT DELETION ---
+// --- DELETE ACCOUNT (CLEARS EVERYTHING) ---
 app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
-    const userId = req.user.id;
-    const files = await File.find({ owner: userId });
-    for (let f of files) { try { await minioClient.removeObject(BUCKET_NAME, f.path); } catch(e){} }
-    await File.deleteMany({ owner: userId });
-    await Folder.deleteMany({ owner: userId });
-    await User.findByIdAndDelete(userId);
-    res.json({ success: true });
+    try {
+        const userId = req.user.id;
+        const files = await File.find({ owner: userId });
+        // Delete physical files from Supabase
+        for (let f of files) { try { await minioClient.removeObject(BUCKET_NAME, f.path); } catch(e){} }
+        // Delete all DB entries
+        await File.deleteMany({ owner: userId });
+        await Folder.deleteMany({ owner: userId });
+        await User.findByIdAndDelete(userId);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Error"); }
 });
 
-// --- VAULT & MANAGEMENT ---
-app.get('/api/vault/status', authenticate, async (req, res) => {
-    const user = await User.findById(req.user.id);
-    res.json({ hasPIN: !!user.vaultPIN });
-});
-
-app.post('/api/vault/unlock', authenticate, async (req, res) => {
-    const user = await User.findById(req.user.id);
-    if (!user.vaultPIN) { user.vaultPIN = await bcrypt.hash(req.body.pin, 10); await user.save(); return res.json({ unlocked: true, setup: true }); }
-    if (await bcrypt.compare(req.body.pin, user.vaultPIN)) res.json({ unlocked: true });
-    else res.status(403).send("Wrong PIN");
-});
-
+// --- DRIVE LOGIC ---
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     const { folderId, tab } = req.query;
     let filter = { owner: req.user.id };
     if (tab === 'starred') filter.starred = true;
     else if (tab === 'trash') filter.isTrash = true;
     else if (tab === 'vault') filter.isVault = true;
-    else if (tab === 'shared') {
-        const user = await User.findById(req.user.id);
-        const shared = await File.find({ "sharedWith.email": user.email.toLowerCase() });
-        return res.json({ folders: [], files: shared.filter(f => {
-            const acc = f.sharedWith.find(a => a.email === user.email.toLowerCase());
-            return !acc.expiresAt || new Date() < acc.expiresAt;
-        })});
-    } else { filter.isVault = false; filter.isTrash = false; filter.parentFolder = folderId === "null" ? null : folderId; }
+    else { filter.isVault = false; filter.isTrash = false; filter.parentFolder = folderId === "null" ? null : folderId; }
     res.json({ folders: await Folder.find(filter), files: await File.find(filter) });
-});
-
-app.patch('/api/files/move', authenticate, async (req, res) => {
-    await File.findByIdAndUpdate(req.body.fileId, { parentFolder: req.body.targetId === 'root' ? null : req.body.targetId });
-    res.json({ msg: "Moved" });
-});
-
-app.post('/api/files/share', authenticate, async (req, res) => {
-    const expiry = req.body.hours > 0 ? new Date(Date.now() + req.body.hours * 3600000) : null;
-    await File.findByIdAndUpdate(req.body.fileId, { $push: { sharedWith: { email: req.body.email.toLowerCase(), expiresAt: expiry } } });
-    res.json({ msg: "OK" });
 });
 
 const upload = multer({ dest: '/tmp/' });
@@ -175,4 +140,4 @@ app.get('/api/drive/storage', authenticate, async (req, res) => {
     res.json({ used: files.reduce((acc, f) => acc + f.fileSize, 0), limit: 107374182400 });
 });
 
-app.listen(process.env.PORT || 5000, () => console.log("Enterprise Backend Ready"));
+app.listen(process.env.PORT || 5000, () => console.log("Server Running"));
