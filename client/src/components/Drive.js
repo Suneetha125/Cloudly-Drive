@@ -19,6 +19,8 @@ const Drive = () => {
     const [activeMenu, setActiveMenu] = useState(null);
     const [profileOpen, setProfileOpen] = useState(false);
     const [isDark, setIsDark] = useState(localStorage.getItem('theme') === 'dark');
+    const [vaultModal, setVaultModal] = useState(null); // { setup: boolean }
+    const [vaultPIN, setVaultPIN] = useState("");
     const [storage, setStorage] = useState({ used: 0, limit: 1 });
 
     const navigate = useNavigate();
@@ -29,10 +31,10 @@ const Drive = () => {
         try {
             const fId = currentFolder ? currentFolder._id : "null";
             const res = await axios.get(`${API}/drive/contents?folderId=${fId}&tab=${activeTab}`, authConfig());
-            setFilesList(res.data.files || []); setFoldersList(res.data.folders || []);
+            setFilesList(res.data.files); setFoldersList(res.data.folders);
             const sRes = await axios.get(`${API}/drive/storage`, authConfig());
             setStorage(sRes.data);
-        } catch (err) { if(err.response?.status === 401) navigate('/'); }
+        } catch (err) { navigate('/'); }
     }, [currentFolder, activeTab, authConfig, navigate]);
 
     useEffect(() => { fetchData(); }, [fetchData]);
@@ -52,6 +54,11 @@ const Drive = () => {
         fetchData();
     };
 
+    const handleBiometric = () => {
+        alert("Simulating Biometric Scan...");
+        setTimeout(() => { setVaultModal(null); setActiveTab('vault'); }, 1000);
+    };
+
     const theme = { bg: isDark ? '#0f172a' : '#f8fafc', card: isDark ? '#1e293b' : '#ffffff', text: isDark ? '#f1f5f9' : '#1e293b', border: isDark ? '#334155' : '#e2e8f0', accent: '#3b82f6' };
 
     return (
@@ -63,18 +70,19 @@ const Drive = () => {
                 <div style={activeTab === 'shared' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('shared')}><Users size={20}/> Shared</div>
                 <div style={activeTab === 'starred' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
                 <div style={activeTab === 'trash' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('trash')}><Trash2 size={20}/> Trash</div>
-                <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={async ()=>{ const p = prompt("PIN:"); p && axios.post(`${API}/vault/unlock`, {pin:p}, authConfig()).then(()=>setActiveTab('vault'))}}><Shield size={20} color="#ef4444"/> Vault</div>
+                <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={async ()=>{ const res = await axios.get(`${API}/vault/status`, authConfig()); setVaultModal({ setup: !res.data.hasPIN }); }}><Shield size={20} color="#ef4444"/> Vault</div>
                 <div style={{ marginTop: 'auto', padding: '20px', background: theme.card, borderRadius: '12px', border: `1px solid ${theme.border}`, color: '#000' }}>
                     <p style={{fontSize:12}}>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / 30GB</p>
                     <div style={styles.bar}><div style={{width:`${(storage.used/storage.limit)*100}%`, height:'100%', background:theme.accent}}></div></div>
                 </div>
             </aside>
 
+            {/* Main */}
             <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <header style={{ height: '80px', padding: '0 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${theme.border}` }}>
                     <div style={styles.searchBar}><Search size={18} color="#94a3b8"/><input placeholder="Search files..." style={{border:'none', background:'transparent', marginLeft:15, width:'100%', outline:'none', color:theme.text}} /></div>
                     <div style={{ display: 'flex', gap: '20px', alignItems: 'center', position:'relative' }}>
-                        <button onClick={(e)=>{e.stopPropagation(); setIsDark(!isDark); localStorage.setItem('theme', !isDark?'dark':'light')}} style={{background:'none', border:'none', cursor:'pointer', color:theme.text}}>{isDark?<Sun/>:<Moon/>}</button>
+                        <button onClick={(e)=>{e.stopPropagation(); setIsDark(!isDark); localStorage.setItem('theme', !isDark?'dark':'light')}} style={styles.iconBtn}>{isDark?<Sun/>:<Moon/>}</button>
                         <div style={styles.userCircle} onClick={(e)=>{e.stopPropagation(); setProfileOpen(!profileOpen)}}>{userName[0]}</div>
                         {profileOpen && (
                             <div style={{...styles.profileDrop, backgroundColor:theme.card, border:`1px solid ${theme.border}`}}>
@@ -89,7 +97,7 @@ const Drive = () => {
                 <div style={{ padding: '40px', flex: 1, overflowY: 'auto' }}>
                     <div style={styles.breadcrumb}>
                         <span onClick={() => {setCurrentFolder(null); setPath([]);}} style={{cursor:'pointer'}}>My Drive</span>
-                        {path.map((p, i) => <span key={`bread-${p._id}`} onClick={()=>{const n=path.slice(0,i+1); setPath(n); setCurrentFolder(p);}} style={{cursor:'pointer'}}> <ChevronRight size={16} style={{display:'inline'}}/> {p.name}</span>)}
+                        {path.map((p, i) => <span key={p._id} onClick={()=>{const n=path.slice(0,i+1); setPath(n); setCurrentFolder(p);}} style={{cursor:'pointer'}}> <ChevronRight size={16} style={{display:'inline'}}/> {p.name}</span>)}
                         <div style={{marginLeft:'auto', display:'flex', gap:10}}>
                             <label style={styles.btnBlue}><Upload size={18}/> Upload<input type="file" hidden multiple onChange={handleUpload}/></label>
                         </div>
@@ -118,6 +126,19 @@ const Drive = () => {
                     </div>
                 </div>
             </main>
+
+            {vaultModal && (
+                <div style={styles.overlay} onClick={()=>setVaultModal(null)}>
+                    <div style={{...styles.modalSmall, backgroundColor: theme.card}} onClick={e=>e.stopPropagation()}>
+                        <Shield size={48} color="#ef4444" style={{margin:'0 auto 20px', display:'block'}}/>
+                        <h3>{vaultModal.setup ? "Setup Vault PIN" : "Unlock Vault"}</h3>
+                        <input type="password" id="vpin" maxLength={4} style={styles.pinInput} placeholder="****" onChange={e=>setVaultPIN(e.target.value)}/>
+                        <button onClick={async ()=>{ const p=document.getElementById('vpin').value; await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig()); setVaultModal(null); setActiveTab('vault'); }} style={styles.btnBluePro}>Unlock</button>
+                        <button onClick={handleBiometric} style={{...styles.btnWhitePro, marginTop:10, width:'100%'}}><Fingerprint size={20}/> Use Fingerprint</button>
+                    </div>
+                </div>
+            )}
+
             {previewFile && <div style={styles.overlay} onClick={()=>setPreviewFile(null)}><div style={{width:'80%', height:'80%'}}><embed src={previewFile} width="100%" height="100%"/></div></div>}
         </div>
     );
@@ -128,6 +149,8 @@ const styles = {
     navActive: { display:'flex', gap:15, padding:'12px 20px', borderRadius:'25px', cursor:'pointer', background:'#e8f0fe', color:'#1967d2', fontWeight:'600' },
     userCircle: { width:32, height:32, borderRadius:'50%', background:'#3b82f6', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:'bold', cursor:'pointer' },
     btnBlue: { background:'#1a73e8', color:'#fff', padding:'12px 24px', borderRadius:'24px', cursor:'pointer', display:'flex', gap:10, fontWeight:'500' },
+    btnBluePro: { background:'#1a73e8', color:'#fff', border:'none', width:'100%', padding:12, borderRadius:8, cursor:'pointer', fontWeight:'bold' },
+    btnWhitePro: { background:'transparent', border:'1px solid #dadce0', padding:10, borderRadius:8, cursor:'pointer' },
     grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:25, marginTop:30 },
     card: { padding:25, borderRadius:16, border:'1px solid', textAlign:'center', position:'relative', cursor:'pointer' },
     dots: { position:'absolute', top:15, right:15, color:'#5f6368', cursor:'pointer' },
@@ -136,8 +159,10 @@ const styles = {
     profileDrop: { position:'absolute', top:45, right:0, width:220, borderRadius:20, boxShadow:'0 4px 15px rgba(0,0,0,0.1)', zIndex:3000, padding:20 },
     logoutBtn: { background:'none', border:'1px solid #dadce0', padding:'10px 15px', borderRadius:10, cursor:'pointer', width:'100%', marginTop:10, display:'flex', alignItems:'center', gap:8, fontSize:12 },
     bar: { height:6, background:'#eee', borderRadius:10, marginTop:10, overflow:'hidden' },
+    pinInput: { width:'100%', padding:12, borderRadius:8, border:'1px solid #ddd', marginBottom:15, textAlign:'center', fontSize:24, letterSpacing:10 },
     searchBar: { background: '#fff', width: '500px', padding: '12px 20px', borderRadius: '12px', display:'flex', alignItems:'center', border:'1px solid #e2e8f0' },
-    breadcrumb: { display:'flex', alignItems:'center', gap:10, fontSize:18, marginBottom:30 }
+    breadcrumb: { display:'flex', alignItems:'center', gap:10, fontSize:18, marginBottom:30 },
+    iconBtn: { background:'none', border:'none', cursor:'pointer', color:'inherit', padding:8 }
 };
 
 export default Drive;
