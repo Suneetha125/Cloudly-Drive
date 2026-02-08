@@ -25,7 +25,7 @@ const minioClient = new Minio.Client({
 });
 const BUCKET_NAME = 'cloudly';
 
-// 2. Email Transporter for OTP
+// 2. Email Setup for OTP
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
@@ -52,20 +52,37 @@ const authenticate = (req, res, next) => {
     try { req.user = jwt.verify(token, SECRET); next(); } catch (err) { res.status(401).send("Invalid"); }
 };
 
-// --- AUTH & OTP (NO PASSWORD IN EMAIL) ---
+// --- AUTH & RECOVERY LOGIC ---
+
 app.post('/api/auth/register', async (req, res) => {
     try {
         const email = req.body.email.toLowerCase().trim();
-        const exists = await User.findOne({ email });
-        if (exists) return res.status(400).json({ error: "Account exists" });
-        
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const user = new User({ ...req.body, email, password: await bcrypt.hash(req.body.password, 10), otp, otpExpires: Date.now() + 600000 });
         await user.save();
-        
-        await transporter.sendMail({ to: email, subject: "Cloudly OTP", text: `Your verification code is: ${otp}` });
+        await transporter.sendMail({ to: email, subject: "Cloudly OTP", text: `Your verification code: ${otp}` });
         res.json({ msg: "OTP Sent" });
-    } catch (e) { res.status(400).json({ error: "Registration failed" }); }
+    } catch (e) { res.status(400).json({ error: "Account exists" }); }
+});
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+    const email = req.body.email.toLowerCase().trim();
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp; user.otpExpires = Date.now() + 600000;
+    await user.save();
+    await transporter.sendMail({ to: email, subject: "Password Reset OTP", text: `Your reset code: ${otp}` });
+    res.json({ msg: "OTP Sent" });
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+    const user = await User.findOne({ email: email.toLowerCase(), otp, otpExpires: { $gt: Date.now() } });
+    if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.otp = undefined; await user.save();
+    res.json({ success: true });
 });
 
 app.post('/api/auth/verify', async (req, res) => {
@@ -76,12 +93,12 @@ app.post('/api/auth/verify', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-    const email = req.body.email.toLowerCase().trim();
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: req.body.email.toLowerCase() });
     if (!user || !user.isVerified || !(await bcrypt.compare(req.body.password, user.password))) return res.status(400).json({ error: "Invalid credentials or unverified" });
     res.json({ token: jwt.sign({ id: user._id, email: user.email }, SECRET), userName: user.name });
 });
 
+// --- ACCOUNT DELETION ---
 app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     const userId = req.user.id;
     const files = await File.find({ owner: userId });
@@ -92,15 +109,19 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     res.json({ success: true });
 });
 
-// --- VAULT ---
+// --- VAULT & MANAGEMENT ---
+app.get('/api/vault/status', authenticate, async (req, res) => {
+    const user = await User.findById(req.user.id);
+    res.json({ hasPIN: !!user.vaultPIN });
+});
+
 app.post('/api/vault/unlock', authenticate, async (req, res) => {
     const user = await User.findById(req.user.id);
-    if (!user.vaultPIN) { user.vaultPIN = await bcrypt.hash(req.body.pin, 10); await user.save(); return res.json({ unlocked: true }); }
+    if (!user.vaultPIN) { user.vaultPIN = await bcrypt.hash(req.body.pin, 10); await user.save(); return res.json({ unlocked: true, setup: true }); }
     if (await bcrypt.compare(req.body.pin, user.vaultPIN)) res.json({ unlocked: true });
     else res.status(403).send("Wrong PIN");
 });
 
-// --- FILE MANAGEMENT ---
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     const { folderId, tab } = req.query;
     let filter = { owner: req.user.id };
@@ -129,7 +150,6 @@ app.post('/api/files/share', authenticate, async (req, res) => {
     res.json({ msg: "OK" });
 });
 
-// --- UPLOAD & SYSTEM ---
 const upload = multer({ dest: '/tmp/' });
 app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
 app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
@@ -155,4 +175,4 @@ app.get('/api/drive/storage', authenticate, async (req, res) => {
     res.json({ used: files.reduce((acc, f) => acc + f.fileSize, 0), limit: 107374182400 });
 });
 
-app.listen(process.env.PORT || 5000, () => console.log("Server Running"));
+app.listen(process.env.PORT || 5000, () => console.log("Enterprise Backend Ready"));
