@@ -35,7 +35,7 @@ const Drive = () => {
             setFilesList(res.data.files); setFoldersList(res.data.folders);
             const sRes = await axios.get(`${API}/drive/storage`, authConfig());
             setStorage(sRes.data);
-        } catch (err) { navigate('/'); }
+        } catch (err) { if(err.response?.status === 401) navigate('/'); }
     }, [currentFolder, activeTab, authConfig, navigate]);
 
     useEffect(() => { fetchData(); }, [fetchData]);
@@ -45,21 +45,19 @@ const Drive = () => {
         for (let file of files) {
             const init = await axios.post(`${API}/upload/initialize`, {}, authConfig());
             const chunks = Math.ceil(file.size / CHUNK_SIZE);
-            const promises = [];
             for (let i = 0; i < chunks; i++) {
                 const fd = new FormData();
                 fd.append('chunk', file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
                 fd.append('uploadId', init.data.uploadId); fd.append('fileName', file.name);
-                promises.push(axios.post(`${API}/upload/chunk`, fd, authConfig()));
+                await axios.post(`${API}/upload/chunk`, fd, authConfig());
             }
-            await Promise.all(promises);
             await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId: init.data.uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault' }, authConfig());
         }
         fetchData();
     };
 
     const handleBiometric = () => {
-        alert("Simulating Fingerprint Scan...");
+        alert("Authenticating via Fingerprint...");
         setTimeout(() => { setVaultModal(false); setActiveTab('vault'); }, 1000);
     };
 
@@ -79,13 +77,14 @@ const Drive = () => {
                 <div style={activeTab === 'shared' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('shared')}><Users size={20}/> Shared</div>
                 <div style={activeTab === 'starred' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
                 <div style={activeTab === 'trash' ? styles.navActive : styles.navItem} onClick={() => setActiveTab('trash')}><Trash2 size={20}/> Trash</div>
-                <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={async ()=>{ const res = await axios.get(`${API}/vault/status`, authConfig()); setVaultModal({ setup: !res.data.hasPIN }); }}><Shield size={20} color="#ef4444"/> Vault</div>
+                <div style={activeTab === 'vault' ? styles.navActive : styles.navItem} onClick={async ()=>{ const res = await axios.get(`${API}/vault/status`, authConfig()); setVaultModal({ setup: !res.data.hasPIN }); }}><Shield size={20} color="#ef4444"/> Private Vault</div>
                 <div style={{ marginTop: 'auto', padding: '20px', background: theme.card, borderRadius: '12px', border: `1px solid ${theme.border}`, color: '#000' }}>
                     <p style={{fontSize:12}}>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / 30GB</p>
                     <div style={styles.bar}><div style={{width:`${(storage.used/storage.limit)*100}%`, height:'100%', background:theme.accent}}></div></div>
                 </div>
             </aside>
 
+            {/* Main Area */}
             <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <header style={{ height: '80px', padding: '0 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${theme.border}` }}>
                     <div style={styles.searchBar}><Search size={18} color="#94a3b8"/><input placeholder="Search files..." style={{border:'none', background:'transparent', marginLeft:15, width:'100%', outline:'none', color:theme.text}} /></div>

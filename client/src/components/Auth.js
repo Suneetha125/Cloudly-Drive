@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-import { HardDrive, Mail, Lock, User, Eye, EyeOff, ArrowLeft } from 'lucide-react';
+import { HardDrive, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 
 const API = "https://cloudly-dj52.onrender.com/api";
 
@@ -44,8 +44,8 @@ const Auth = () => {
             <div style={styles.card}>
                 <div style={{textAlign:'center', marginBottom:30}}>
                     <HardDrive size={50} color="#3b82f6" />
-                    <h2 style={{marginTop:10}}>
-                        {mode === 'login' ? 'Login to Cloudly' : mode === 'signup' ? 'Create Account' : mode === 'forgot' ? 'Recover Password' : 'Verify OTP'}
+                    <h2>
+                        {mode === 'login' ? 'Login' : mode === 'signup' ? 'Create Account' : mode === 'forgot' ? 'Recover' : 'Verify'}
                     </h2>
                 </div>
                 <form onSubmit={handleSubmit} style={{display:'flex', flexDirection:'column', gap:15}}>
