@@ -9,7 +9,6 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const Minio = require('minio');
 const nodemailer = require('nodemailer');
-const crypto = require('crypto');
 
 const app = express();
 const SECRET = process.env.JWT_SECRET || "REAL_DRIVE_PRO_2026";
@@ -53,8 +52,7 @@ const authenticate = (req, res, next) => {
     try { req.user = jwt.verify(token, SECRET); next(); } catch (err) { res.status(401).send("Invalid"); }
 };
 
-// --- AUTH & PASSWORD RECOVERY ---
-
+// --- AUTH & IDENTITY ---
 app.post('/api/auth/register', async (req, res) => {
     try {
         const email = req.body.email.toLowerCase().trim();
@@ -65,14 +63,14 @@ app.post('/api/auth/register', async (req, res) => {
         const user = new User({ ...req.body, email, password: await bcrypt.hash(req.body.password, 10), otp, otpExpires: Date.now() + 600000 });
         await user.save();
         
-        await transporter.sendMail({ to: email, subject: "Cloudly OTP", text: `Your code: ${otp}` });
+        await transporter.sendMail({ to: email, subject: "Cloudly Verification Code", text: `Your code is: ${otp}` });
         res.json({ msg: "OTP Sent" });
     } catch (e) { res.status(400).json({ error: "Registration failed" }); }
 });
 
 app.post('/api/auth/verify', async (req, res) => {
     const user = await User.findOne({ email: req.body.email.toLowerCase(), otp: req.body.otp, otpExpires: { $gt: Date.now() } });
-    if (!user) return res.status(400).json({ error: "Invalid OTP" });
+    if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
     user.isVerified = true; user.otp = undefined; await user.save();
     res.json({ success: true });
 });
@@ -104,7 +102,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 app.post('/api/auth/reset-password', async (req, res) => {
     const { email, otp, newPassword } = req.body;
     const user = await User.findOne({ email: email.toLowerCase(), otp, otpExpires: { $gt: Date.now() } });
-    if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
+    if (!user) return res.status(400).json({ error: "Invalid OTP" });
     user.password = await bcrypt.hash(newPassword, 10);
     user.otp = undefined; await user.save();
     res.json({ success: true });
@@ -120,7 +118,7 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     res.json({ success: true });
 });
 
-// --- VAULT ---
+// --- VAULT & MANAGEMENT ---
 app.get('/api/vault/status', authenticate, async (req, res) => {
     const user = await User.findById(req.user.id);
     res.json({ hasPIN: !!user.vaultPIN });
@@ -133,7 +131,6 @@ app.post('/api/vault/unlock', authenticate, async (req, res) => {
     else res.status(403).send("Wrong PIN");
 });
 
-// --- FILE MANAGEMENT ---
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     const { folderId, tab } = req.query;
     let filter = { owner: req.user.id };
@@ -162,7 +159,7 @@ app.post('/api/files/share', authenticate, async (req, res) => {
     res.json({ msg: "OK" });
 });
 
-// --- UPLOAD & STORAGE ---
+// Upload & Storage
 const upload = multer({ dest: '/tmp/' });
 app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
 app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
@@ -171,13 +168,11 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) =
     fs.unlinkSync(req.file.path); res.json({ success: true });
 });
 app.post('/api/upload/complete', authenticate, async (req, res) => {
-    try {
-        const name = `${req.body.uploadId}-${req.body.fileName}`;
-        const tPath = path.join('/tmp', name);
-        await minioClient.fPutObject(BUCKET_NAME, name, tPath);
-        const file = new File({ fileName: req.body.fileName, fileSize: fs.statSync(tPath).size, path: name, parentFolder: req.body.folderId || null, owner: req.user.id, isVault: req.body.isVault === 'true' });
-        await file.save(); fs.unlinkSync(tPath); res.json(file);
-    } catch (err) { res.status(500).json({ error: "Cloud storage failed" }); }
+    const name = `${req.body.uploadId}-${req.body.fileName}`;
+    const tPath = path.join('/tmp', name);
+    await minioClient.fPutObject(BUCKET_NAME, name, tPath);
+    const file = new File({ fileName: req.body.fileName, fileSize: fs.statSync(tPath).size, path: name, parentFolder: req.body.folderId || null, owner: req.user.id, isVault: req.body.isVault === 'true' });
+    await file.save(); fs.unlinkSync(tPath); res.json(file);
 });
 
 app.get('/api/files/preview/:id', authenticate, async (req, res) => {
@@ -187,8 +182,7 @@ app.get('/api/files/preview/:id', authenticate, async (req, res) => {
 
 app.get('/api/drive/storage', authenticate, async (req, res) => {
     const files = await File.find({ owner: req.user.id });
-    const used = files.reduce((acc, f) => acc + f.fileSize, 0);
-    res.json({ used, limit: 32212254720 }); // 30GB
+    res.json({ used: files.reduce((acc, f) => acc + f.fileSize, 0), limit: 32212254720 }); // 30GB
 });
 
 app.listen(process.env.PORT || 5000, () => console.log("Server Running"));
