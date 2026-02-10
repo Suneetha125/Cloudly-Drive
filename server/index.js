@@ -277,4 +277,239 @@ app.get('/api/drive/contents', authenticate, async (req, res) => {
         res.json({ folders, files });
     } catch (e) {
         console.error("Error fetching drive contents:", e);
-        res.status(500).json({ error: "Failed
+        res.status(500).json({ error: "Failed to fetch drive contents." });
+    }
+});
+
+app.post('/api/folders', authenticate, async (req, res) => { // Renamed from /api/drive/folder for consistency
+    try {
+        const { name, parentFolder, isVault } = req.body;
+        if (!name) return res.status(400).json({ error: "Folder name is required." });
+        const folder = new Folder({ 
+            name, 
+            parentFolder: parentFolder || null, 
+            owner: req.user.id, 
+            isVault: isVault || false 
+        });
+        await folder.save(); 
+        res.status(201).json(folder);
+    } catch (e) {
+        console.error("Error creating folder:", e);
+        res.status(500).json({ error: "Failed to create folder." });
+    }
+});
+
+app.patch('/api/drive/move', authenticate, async (req, res) => {
+    try {
+        const { type, itemId, targetId } = req.body;
+        const Model = type === 'file' ? File : Folder;
+        const update = { parentFolder: targetId === 'root' ? null : targetId };
+
+        const item = await Model.findOneAndUpdate(
+            { _id: itemId, owner: req.user.id }, // Ensure user owns the item
+            update,
+            { new: true }
+        );
+        if (!item) return res.status(404).json({ error: "Item not found or not owned by user." });
+        res.json({ success: true, message: "Item moved successfully." });
+    } catch (e) {
+        console.error("Error moving item:", e);
+        res.status(500).json({ error: "Failed to move item." });
+    }
+});
+
+app.post('/api/files/share', authenticate, async (req, res) => { // Endpoint for sharing
+    try {
+        const { fileId, email, role, hours } = req.body;
+        if (!fileId || !email || !role) {
+            return res.status(400).json({ error: "File ID, email, and role are required." });
+        }
+        const expiryDate = hours > 0 ? new Date(Date.now() + hours * 3600000) : null; // Hours to milliseconds
+        
+        const file = await File.findOneAndUpdate(
+            { _id: fileId, owner: req.user.id }, // Only owner can share
+            { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt: expiryDate } } },
+            { new: true }
+        );
+        if (!file) return res.status(404).json({ error: "File not found or not owned by user." });
+        res.json({ success: true, message: "File shared successfully." });
+    } catch (e) {
+        console.error("Error sharing file:", e);
+        res.status(500).json({ error: "Failed to share file." });
+    }
+});
+
+app.delete('/api/files/:id', authenticate, async (req, res) => { // Unified delete file
+    try {
+        const file = await File.findOne({ _id: req.params.id, owner: req.user.id });
+        if (!file) {
+            return res.status(404).json({ error: "File not found or not owned by user." });
+        }
+
+        await minioClient.removeObject(BUCKET_NAME, file.path);
+        await File.deleteOne({ _id: file._id });
+        await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: -file.fileSize } }); // Deduct storage
+        res.json({ success: true, message: "File deleted successfully." });
+    } catch (e) {
+        console.error("Error deleting file:", e);
+        res.status(500).json({ error: "Failed to delete file." });
+    }
+});
+
+app.delete('/api/folders/:id', authenticate, async (req, res) => { // Unified delete folder
+    try {
+        const folder = await Folder.findOne({ _id: req.params.id, owner: req.user.id });
+        if (!folder) {
+            return res.status(404).json({ error: "Folder not found or not owned by user." });
+        }
+        // Recursively delete contents (files and subfolders)
+        const deleteContents = async (currentFolderId) => {
+            const childFiles = await File.find({ parentFolder: currentFolderId, owner: req.user.id });
+            for (const file of childFiles) {
+                try {
+                    await minioClient.removeObject(BUCKET_NAME, file.path);
+                    await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: -file.fileSize } });
+                } catch(e) { console.warn(`Could not delete S3 object ${file.path}:`, e.message); }
+                await File.deleteOne({ _id: file._id });
+            }
+            const childFolders = await Folder.find({ parentFolder: currentFolderId, owner: req.user.id });
+            for (const childFolder of childFolders) {
+                await deleteContents(childFolder._id); // Recurse for subfolders
+                await Folder.deleteOne({ _id: childFolder._id });
+            }
+        };
+
+        await deleteContents(folder._id); // Delete contents of the main folder
+        await Folder.deleteOne({ _id: folder._id }); // Delete the main folder itself
+        res.json({ success: true, message: "Folder and its contents deleted successfully." });
+    } catch (e) {
+        console.error("Error deleting folder:", e);
+        res.status(500).json({ error: "Failed to delete folder." });
+    }
+});
+
+// --- UPLOAD & STORAGE ---
+const upload = multer({ dest: '/tmp/' }); // Files are temporarily stored here
+app.post('/api/upload/initialize', authenticate, (req, res) => {
+    res.json({ uploadId: Date.now().toString() }); // Simple unique ID for upload
+});
+
+app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No chunk file provided." });
+    if (!req.body.uploadId || !req.body.fileName) return res.status(400).json({ error: "Missing uploadId or fileName." });
+
+    const tempFilePath = path.join('/tmp', `${req.body.uploadId}-${req.body.fileName}`);
+    try {
+        fs.appendFileSync(tempFilePath, fs.readFileSync(req.file.path));
+        fs.unlinkSync(req.file.path); // Remove the temporary chunk
+        res.json({ success: true });
+    } catch (e) {
+        console.error("Error appending chunk:", e);
+        res.status(500).json({ error: "Failed to process chunk." });
+    }
+});
+
+app.post('/api/upload/complete', authenticate, async (req, res) => {
+    try {
+        const { fileName, uploadId, folderId, isVault } = req.body;
+        if (!fileName || !uploadId) return res.status(400).json({ error: "Missing fileName or uploadId." });
+
+        const tempFilePath = path.join('/tmp', `${uploadId}-${fileName}`);
+        if (!fs.existsSync(tempFilePath)) {
+            return res.status(400).json({ error: "Temporary file not found for completion." });
+        }
+
+        const fileStats = fs.statSync(tempFilePath);
+        const s3ObjectName = `${req.user.id}/${uploadId}-${fileName}`; // Unique S3 path per user
+
+        await minioClient.fPutObject(BUCKET_NAME, s3ObjectName, tempFilePath, {
+            'Content-Type': 'application/octet-stream' // Or detect content type
+        });
+
+        const file = new File({ 
+            fileName: fileName, 
+            fileSize: fileStats.size, 
+            path: s3ObjectName, 
+            parentFolder: folderId || null, 
+            owner: req.user.id, 
+            isVault: isVault || false 
+        });
+        await file.save(); 
+        await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: file.fileSize } });
+        
+        fs.unlinkSync(tempFilePath); // Clean up merged temporary file
+        res.status(201).json(file);
+    } catch (err) { 
+        console.error("Upload complete error:", err);
+        res.status(500).json({ error: "Upload failed: " + err.message }); 
+    }
+});
+
+app.get('/api/files/preview/:id', authenticate, async (req, res) => { // Renamed for consistency
+    try {
+        const file = await File.findOne({ _id: req.params.id, owner: req.user.id }); // Only owner can preview
+        if (!file) {
+            // Also check if file is shared with the user
+            const sharedFile = await File.findOne({ _id: req.params.id, "sharedWith.email": req.user.email });
+            if (!sharedFile) return res.status(404).json({ error: "File not found or you don't have access." });
+            
+            const access = sharedFile.sharedWith.find(a => a.email === req.user.email);
+            if (!access || (access.expiresAt && new Date() > access.expiresAt)) {
+                return res.status(403).json({ error: "Access to this shared file has expired or is invalid." });
+            }
+            // If shared, allow preview
+            const url = await minioClient.presignedUrl('GET', BUCKET_NAME, sharedFile.path, 3600); // 1 hour expiry
+            return res.json({ url });
+
+        }
+        const url = await minioClient.presignedUrl('GET', BUCKET_NAME, file.path, 3600); // 1 hour expiry
+        res.json({ url });
+    } catch (e) {
+        console.error("Error generating preview URL:", e);
+        res.status(500).json({ error: "Failed to generate preview URL." });
+    }
+});
+
+app.get('/api/drive/storage', authenticate, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ error: "User not found." });
+        res.json({ used: user.storageUsed, limit: 32212254720 }); // 30GB limit
+    } catch (e) {
+        console.error("Error fetching storage info:", e);
+        res.status(500).json({ error: "Failed to fetch storage information." });
+    }
+});
+
+app.post('/api/vault/unlock', authenticate, async (req, res) => {
+    try {
+        const { pin } = req.body;
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ error: "User not found." });
+
+        if (!user.vaultPIN) { // First time setting vault PIN
+            if (!pin) return res.status(400).json({ error: "PIN is required to set up vault." });
+            user.vaultPIN = await bcrypt.hash(pin, 10); 
+            await user.save(); 
+            return res.json({ success: true, message: "Vault PIN set successfully." });
+        }
+
+        // Existing vault PIN
+        if (!pin || !(await bcrypt.compare(pin, user.vaultPIN))) {
+            return res.status(403).json({ error: "Wrong PIN." });
+        }
+        res.json({ success: true, message: "Vault unlocked." });
+    } catch (e) {
+        console.error("Vault unlock error:", e);
+        res.status(500).json({ error: "Failed to unlock vault." });
+    }
+});
+
+// Default route for unhandled requests (e.g., /api/auth/nuclear-reset)
+app.use((req, res) => {
+    res.status(404).json({ error: `Cannot ${req.method} ${req.originalUrl}. This endpoint does not exist.` });
+});
+
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server Running on port ${PORT}`));
