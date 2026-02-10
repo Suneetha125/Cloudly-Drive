@@ -7,74 +7,36 @@ const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const Minio = require('minio');
 const nodemailer = require('nodemailer');
+const { createClient } = require('@supabase/supabase-js'); // Import Supabase client
 
 const app = express();
 const SECRET = process.env.JWT_SECRET || "CLOUDLY_FINAL_BOSS_2026"; // CHANGE THIS IN PRODUCTION!
-const BUCKET_NAME = 'cloudly'; // Your desired bucket name
+const BUCKET_NAME = 'cloudly'; // Your Supabase Storage bucket name
 
-// 1. Supabase S3 Setup
-console.log('DEBUG S3 Config:');
-console.log('  process.env.S3_ENDPOINT:', process.env.S3_ENDPOINT);
-console.log('  process.env.S3_ACCESS_KEY (first 5 chars):', (process.env.S3_ACCESS_KEY || 'N/A').substring(0, 5));
-console.log('  process.env.S3_SECRET_KEY (first 5 chars):', (process.env.S3_SECRET_KEY || 'N/A').substring(0, 5)); // This is your service_role JWT
-console.log('  process.env.S3_REGION:', process.env.S3_REGION);
+// --- Supabase Client Setup (REPLACING MINIO CLIENT) ---
+console.log('DEBUG Supabase Config:');
+console.log('  process.env.SUPABASE_URL:', process.env.SUPABASE_URL);
+// Using S3_SECRET_KEY for the Supabase service_role key to maintain your existing env setup
+console.log('  process.env.S3_SECRET_KEY (first 5 chars):', (process.env.S3_SECRET_KEY || 'N/A').substring(0, 5));
 
-const rawS3Endpoint = process.env.S3_ENDPOINT || '';
-let s3Endpoint = '';
-if (rawS3Endpoint.startsWith('https://')) {
-    s3Endpoint = rawS3Endpoint.replace('https://', '').split('/')[0];
-} else if (rawS3Endpoint) {
-    s3Endpoint = rawS3Endpoint.split('/')[0];
+if (!process.env.SUPABASE_URL || !process.env.S3_SECRET_KEY) {
+    console.error('CRITICAL ERROR: SUPABASE_URL or S3_SECRET_KEY environment variables are missing. Exiting.');
+    process.exit(1);
 }
-if (!s3Endpoint) {
-    console.error('CRITICAL ERROR: S3_ENDPOINT environment variable is missing or malformed. Exiting.');
-    process.exit(1); // Exit if endpoint is truly bad
-}
-console.log('  Parsed s3Endpoint:', s3Endpoint);
 
-// --- MODIFIED MINIO CLIENT INITIALIZATION ---
-// This strategy uses dummy accessKey/secretKey and places the actual
-// Supabase service_role JWT into the sessionToken field for better compatibility.
-const SUPABASE_SERVICE_ROLE_JWT = process.env.S3_SECRET_KEY; // This holds your 'eyJhb...' token
-
-const minioClient = new Minio.Client({
-    endPoint: s3Endpoint,
-    port: 443,
-    useSSL: true,
-    accessKey: 'supabase-dummy-access-key', // Dummy value
-    secretKey: 'supabase-dummy-secret-key', // Dummy value
-    region: process.env.S3_REGION || 'us-east-1',
-    sessionToken: SUPABASE_SERVICE_ROLE_JWT, // <--- PLACE THE JWT HERE!
-    pathStyle: true
-});
-// --- END MODIFIED MINIO CLIENT INITIALIZATION ---
-
-
-// Function to ensure the bucket exists (modified to skip makeBucket since it's manual)
-// Assumes 'cloudly' bucket is manually created in Supabase dashboard.
-const ensureBucketExists = async () => {
-    try {
-        console.log(`Attempting to check if bucket '${BUCKET_NAME}' exists and is accessible.`);
-        const exists = await minioClient.bucketExists(BUCKET_NAME); // This check is the focus
-        if (exists) {
-            console.log(`Bucket '${BUCKET_NAME}' already exists and is accessible. Proceeding.`);
-        } else {
-            // If bucketExists returns false, and we know it exists, then there's an auth/perm issue
-            console.error(`CRITICAL: Bucket '${BUCKET_NAME}' does NOT exist or could not be verified by Minio with current credentials. ` +
-                          `Please ensure it's created manually in Supabase Storage and that your service_role key has list/read permissions for buckets.`);
-            throw new Error(`S3 Bucket '${BUCKET_NAME}' not found or inaccessible (authentication/authorization issue).`);
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.S3_SECRET_KEY, // This is your service_role JWT
+    {
+        auth: {
+            persistSession: false, // Important for backend services
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
         }
-    } catch (e) {
-        console.error(`S3 Error Details during bucket existence check for '${BUCKET_NAME}':`);
-        console.error(`  Error message: ${e.message}`);
-        console.error(`  Error code: ${e.code}`);
-        console.error(`  Error name: ${e.name}`);
-        console.error(`  Full error object:`, JSON.stringify(e, null, 2)); // Stringify for better log output
-        throw new Error(`S3 Bucket existence check failed: ${e.message || e.code || 'Unknown S3 error during bucket check'}`);
     }
-};
+);
+// --- END Supabase Client Setup ---
 
 // 2. Email Setup
 const transporter = nodemailer.createTransport({
@@ -91,16 +53,13 @@ app.use(express.json({ limit: '50mb' }));
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
       console.log("Connected to MongoDB Cloud!");
-      return ensureBucketExists(); // Ensure S3 bucket exists AFTER DB connection is established
-  })
-  .then(() => {
-      console.log("S3 Bucket setup confirmed. Server starting.");
+      console.log("Supabase Storage client initialized. Server starting.");
       const PORT = process.env.PORT || 5000;
       app.listen(PORT, () => console.log(`Server Running on port ${PORT}`));
   })
   .catch(err => {
-      console.error("CRITICAL STARTUP ERROR: MongoDB or S3 Bucket Connection Error:", err.message);
-      process.exit(1); // Exit process if a critical dependency fails
+      console.error("CRITICAL STARTUP ERROR: MongoDB Connection Error:", err.message);
+      process.exit(1);
   });
 
 
@@ -129,7 +88,7 @@ const Folder = mongoose.model('Folder', {
 const File = mongoose.model('File', {
     fileName: String,
     fileSize: Number,
-    s3Path: String,
+    s3Path: String, // Will now be the path within the Supabase bucket
     parentFolder: { type: mongoose.Schema.Types.ObjectId, ref: 'Folder', default: null },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     isStarred: { type: Boolean, default: false },
@@ -253,9 +212,17 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
 
         for (let f of files) {
             try {
-                await minioClient.removeObject(BUCKET_NAME, f.s3Path);
-            } catch (s3Err) {
-                console.warn(`Could not delete file ${f.s3Path} from S3: ${s3Err.message}`);
+                // --- Supabase Storage: Delete Object ---
+                const { error: deleteError } = await supabase
+                    .storage
+                    .from(BUCKET_NAME)
+                    .remove([f.s3Path]); // path within the bucket
+
+                if (deleteError) {
+                    console.warn(`Supabase Storage deletion failed for file ${f.s3Path}: ${deleteError.message}`);
+                }
+            } catch (storageErr) {
+                console.warn(`Supabase Storage deletion failed for file ${f.s3Path}: ${storageErr.message}`);
             }
         }
         await File.deleteMany({ owner: userId });
@@ -400,10 +367,20 @@ app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
                 return res.status(404).json({ error: "File not found or you don't own it." });
             }
             try {
-                await minioClient.removeObject(BUCKET_NAME, file.s3Path);
+                // --- Supabase Storage: Delete Object ---
+                const { error: deleteError } = await supabase
+                    .storage
+                    .from(BUCKET_NAME)
+                    .remove([file.s3Path]); // path within the bucket
+
+                if (deleteError) {
+                    console.error(`Supabase Storage deletion failed for file ${file.s3Path}: ${deleteError.message}`);
+                    return res.status(500).json({ error: `Failed to delete file from storage: ${deleteError.message}` });
+                }
                 await User.findByIdAndUpdate(userId, { $inc: { storageUsed: -file.fileSize } });
-            } catch (s3Err) {
-                console.error(`S3 deletion failed for file ${file.s3Path}: ${s3Err.message}`);
+            } catch (storageErr) {
+                console.error(`Supabase Storage deletion failed for file ${file.s3Path}: ${storageErr.message}`);
+                return res.status(500).json({ error: `Failed to delete file from storage: ${storageErr.message}` });
             }
             await File.deleteOne({ _id: id });
             res.json({ success: true, message: "File deleted successfully." });
@@ -467,13 +444,13 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) =
 
 
 app.post('/api/upload/complete', authenticate, async (req, res) => {
-    const { fileName, uploadId, folderId, isVault } = req.body;
+    const { fileName, uploadId, folderId, isVault, mimeType } = req.body; // Added mimeType
     const tempFileName = `${uploadId}-${fileName}`;
     const tempFilePath = path.join('/tmp', tempFileName);
 
     try {
-        if (!fileName || !uploadId) {
-            return res.status(400).json({ error: "Filename and upload ID are required for completion." });
+        if (!fileName || !uploadId || !mimeType) { // mimeType is crucial for Supabase upload
+            return res.status(400).json({ error: "Filename, upload ID, and MIME type are required for completion." });
         }
 
         if (!fs.existsSync(tempFilePath)) {
@@ -486,19 +463,37 @@ app.post('/api/upload/complete', authenticate, async (req, res) => {
 
         const user = await User.findById(req.user.id);
         if (!user) {
-            fs.unlinkSync(tempFilePath); // Clean up temp file
+            fs.unlinkSync(tempFilePath);
             return res.status(404).json({ error: "User not found." });
         }
 
         if (user.storageUsed + fileSize > user.storageLimit) {
-            fs.unlinkSync(tempFilePath); // Clean up temp file
+            fs.unlinkSync(tempFilePath);
             return res.status(403).json({ error: "Storage limit exceeded." });
         }
 
-        const s3ObjectPath = `${req.user.id}/${Date.now()}-${fileName}`;
-        console.log(`Attempting S3 upload for file: ${fileName} to path: ${s3ObjectPath}`);
+        // --- Supabase Storage: Upload Object ---
+        const s3ObjectPath = `${req.user.id}/${Date.now()}-${fileName}`; // Path within the bucket
+        const fileBuffer = fs.readFileSync(tempFilePath); // Read the complete file into a buffer
 
-        await minioClient.fPutObject(BUCKET_NAME, s3ObjectPath, tempFilePath); // <--- Critical upload step
+        console.log(`Attempting Supabase Storage upload for file: ${fileName} to path: ${s3ObjectPath} with MIME: ${mimeType}`);
+
+        const { data, error: uploadError } = await supabase
+            .storage
+            .from(BUCKET_NAME)
+            .upload(s3ObjectPath, fileBuffer, {
+                contentType: mimeType,
+                upsert: false // Set to true if you want to overwrite existing files
+            });
+
+        if (uploadError) {
+            console.error(`SUPABASE UPLOAD FAILED: ${uploadError.message}`);
+            // If Supabase provides specific error details, include them
+            console.error(`Supabase Error Detail:`, JSON.stringify(uploadError, null, 2));
+            fs.unlinkSync(tempFilePath);
+            return res.status(500).json({ error: `Failed to upload file to storage: ${uploadError.message}` });
+        }
+        // --- END Supabase Storage: Upload Object ---
 
         const file = new File({
             fileName,
@@ -514,14 +509,13 @@ app.post('/api/upload/complete', authenticate, async (req, res) => {
 
         res.status(201).json(file);
     } catch (e) {
-        console.error("UPLOAD COMPLETE FAILED SERVER-SIDE:");
+        console.error("UPLOAD COMPLETE FAILED SERVER-SIDE (Catch Block):");
         console.error(`  Error uploading file ${fileName} for user ${req.user.id}:`);
         console.error(`  Error message: ${e.message}`);
-        console.error(`  Error code: ${e.code}`);
+        console.error(`  Error code: ${e.code}`); // Note: Supabase errors have their own structure
         console.error(`  Error name: ${e.name}`);
-        console.error(`  Full error object:`, JSON.stringify(e, null, 2)); // Stringify for better log output
+        console.error(`  Full error object:`, JSON.stringify(e, null, 2));
 
-        // Ensure temporary file is cleaned up even if S3 upload fails
         if (fs.existsSync(tempFilePath)) {
             try {
                 fs.unlinkSync(tempFilePath);
@@ -531,7 +525,6 @@ app.post('/api/upload/complete', authenticate, async (req, res) => {
             }
         }
 
-        // Respond with a more informative error message
         res.status(500).json({ error: "Failed to complete upload due to a server error. Please check server logs for details." });
     }
 });
@@ -552,8 +545,19 @@ app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
             return res.status(403).json({ error: "You do not have permission to view this file." });
         }
 
-        const presignedUrl = await minioClient.presignedUrl('GET', BUCKET_NAME, file.s3Path, 3600);
-        res.json({ url: presignedUrl });
+        // --- Supabase Storage: Get Presigned URL ---
+        const { data, error: urlError } = await supabase
+            .storage
+            .from(BUCKET_NAME)
+            .createSignedUrl(file.s3Path, 3600); // URL valid for 1 hour (3600 seconds)
+
+        if (urlError) {
+            console.error(`SUPABASE PRESIGNED URL FAILED: ${urlError.message}`);
+            return res.status(500).json({ error: `Failed to generate preview URL: ${urlError.message}` });
+        }
+        res.json({ url: data.signedUrl });
+        // --- END Supabase Storage: Get Presigned URL ---
+
     } catch (e) {
         console.error("Failed to get preview URL:", e);
         res.status(500).json({ error: "Failed to generate preview URL." });
