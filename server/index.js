@@ -443,58 +443,60 @@ app.post('/api/vault/unlock', authenticate, async (req, res) => {
     else res.status(403).json({ error: "Fail" });
 });
 // --- 3. FORGOT PASSWORD ROUTE ---
+// --- FORGOT PASSWORD (STEP 1: GENERATE & SEND OTP) ---
 app.post('/api/auth/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
-        console.log("Attempting OTP for:", email);
+        // Search for user (Case-Insensitive)
+        const user = await User.findOne({ email: { $regex: new RegExp("^" + email + "$", "i") } });
+        
+        if (!user) return res.status(404).json({ error: "User not found in our database" });
 
-        const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user) {
-            return res.status(404).json({ error: "User not found" });
-        }
-
+        // Generate 6-Digit OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        
+        // Save to DB with 10-minute expiry
         user.otp = otp;
-        user.otpExpires = Date.now() + 600000; // 10 minutes
+        user.otpExpires = Date.now() + 600000; 
         await user.save();
 
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: email,
-            subject: "Cloudly Password Reset OTP",
+        // Send Email via your Gmail
+        await transporter.sendMail({
+            from: `"Cloudly Support" <${process.env.EMAIL_USER}>`,
+            to: user.email,
+            subject: "Cloudly Password Recovery Code",
             text: `Your OTP for password reset is: ${otp}. It expires in 10 minutes.`
-        };
+        });
 
-        await transporter.sendMail(mailOptions);
-        console.log("✅ OTP sent successfully to:", email);
-        res.json({ success: true });
-
+        res.json({ success: true, message: "OTP sent successfully" });
     } catch (e) {
-        console.error("❌ Forgot Password Error:", e); // This shows the REAL error in Render logs
-        res.status(500).json({ error: "Server Error: Could not send email." });
+        console.error("Forgot Pass Error:", e);
+        res.status(500).json({ error: "Server Error: Could not send email" });
     }
 });
 
-// --- 4. RESET PASSWORD ROUTE (Step 2) ---
+// --- RESET PASSWORD (STEP 2: VERIFY OTP & UPDATE) ---
 app.post('/api/auth/reset-password', async (req, res) => {
     try {
         const { email, otp, newPassword } = req.body;
+        
+        // Find user with valid OTP and verify it hasn't expired
         const user = await User.findOne({ 
-            email: email.toLowerCase(), 
+            email: { $regex: new RegExp("^" + email + "$", "i") }, 
             otp, 
             otpExpires: { $gt: Date.now() } 
         });
 
-        if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
+        if (!user) return res.status(400).json({ error: "Invalid OTP or code expired" });
 
+        // Hash new password and wipe OTP fields
         user.password = await bcrypt.hash(newPassword, 10);
-        user.otp = undefined; // Clear OTP
-        user.otpExpires = undefined; // Clear Expiry
+        user.otp = undefined;
+        user.otpExpires = undefined;
         await user.save();
 
-        res.json({ success: true, message: "Password reset successful" });
+        res.json({ success: true, message: "Password updated successfully" });
     } catch (e) {
-        console.error(e);
-        res.status(500).json({ error: "Reset Failed" });
+        res.status(500).json({ error: "Failed to reset password" });
     }
 });
