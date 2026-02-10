@@ -11,97 +11,96 @@ const Minio = require('minio');
 const nodemailer = require('nodemailer');
 
 const app = express();
-const SECRET = process.env.JWT_SECRET || "CLOUDLY_FINAL_BOSS_2026"; // CHANGE THIS IN PRODUCTION
+const SECRET = process.env.JWT_SECRET || "CLOUDLY_FINAL_BOSS_2026"; // CHANGE THIS IN PRODUCTION!
 const BUCKET_NAME = 'cloudly'; // Your desired bucket name
 
-// 1. Supabase S3 Setup - Fixed for Global Deployment
-// Debugging S3 environment variables before Minio client initialization
+// 1. Supabase S3 Setup
 console.log('DEBUG S3 Config:');
 console.log('  process.env.S3_ENDPOINT:', process.env.S3_ENDPOINT);
 console.log('  process.env.S3_ACCESS_KEY (first 5 chars):', (process.env.S3_ACCESS_KEY || 'N/A').substring(0, 5));
-console.log('  process.env.S3_SECRET_KEY (first 5 chars):', (process.env.S3_SECRET_KEY || 'N/A').substring(0, 5));
+console.log('  process.env.S3_SECRET_KEY (first 5 chars):', (process.env.S3_SECRET_KEY || 'N/A').substring(0, 5)); // This is your service_role JWT
 console.log('  process.env.S3_REGION:', process.env.S3_REGION);
 
-// Ensure s3Endpoint is robustly parsed or defaulted to prevent Minio client issues
 const rawS3Endpoint = process.env.S3_ENDPOINT || '';
 let s3Endpoint = '';
 if (rawS3Endpoint.startsWith('https://')) {
     s3Endpoint = rawS3Endpoint.replace('https://', '').split('/')[0];
 } else if (rawS3Endpoint) {
-    // If it's present but doesn't start with https, assume it's just the hostname
     s3Endpoint = rawS3Endpoint.split('/')[0];
 }
-// Fallback if s3Endpoint is still empty (e.g., if S3_ENDPOINT was truly empty)
 if (!s3Endpoint) {
-    console.error('CRITICAL ERROR: S3_ENDPOINT environment variable is missing or malformed.');
-    // You might want to exit the process here if S3 is mandatory for app startup
-    process.exit(1);
+    console.error('CRITICAL ERROR: S3_ENDPOINT environment variable is missing or malformed. Exiting.');
+    process.exit(1); // Exit if endpoint is truly bad
 }
 console.log('  Parsed s3Endpoint:', s3Endpoint);
 
+// --- MODIFIED MINIO CLIENT INITIALIZATION ---
+// This strategy uses dummy accessKey/secretKey and places the actual
+// Supabase service_role JWT into the sessionToken field for better compatibility.
+const SUPABASE_SERVICE_ROLE_JWT = process.env.S3_SECRET_KEY; // This holds your 'eyJhb...' token
 
 const minioClient = new Minio.Client({
     endPoint: s3Endpoint,
-    port: 443, // Default for HTTPS
-    useSSL: true, // Always use SSL for production
-    accessKey: process.env.S3_ACCESS_KEY,
-    secretKey: process.env.S3_SECRET_KEY,
-    region: process.env.S3_REGION || 'us-east-1', // Default region
-    pathStyle: true // Important for Supabase and some other S3-compatible storage
+    port: 443,
+    useSSL: true,
+    accessKey: 'supabase-dummy-access-key', // Dummy value
+    secretKey: 'supabase-dummy-secret-key', // Dummy value
+    region: process.env.S3_REGION || 'us-east-1',
+    sessionToken: SUPABASE_SERVICE_ROLE_JWT, // <--- PLACE THE JWT HERE!
+    pathStyle: true
 });
+// --- END MODIFIED MINIO CLIENT INITIALIZATION ---
 
-// Function to ensure the bucket exists (useful for fresh deployments)
+
+// Function to ensure the bucket exists (modified to skip makeBucket since it's manual)
+// Assumes 'cloudly' bucket is manually created in Supabase dashboard.
 const ensureBucketExists = async () => {
     try {
-        console.log(`Attempting to check/create bucket: '${BUCKET_NAME}' in region '${process.env.S3_REGION || 'us-east-1'}'`);
-        const exists = await minioClient.bucketExists(BUCKET_NAME);
-        if (!exists) {
-            await minioClient.makeBucket(BUCKET_NAME, process.env.S3_REGION || 'us-east-1');
-            console.log(`Bucket '${BUCKET_NAME}' created successfully.`);
+        console.log(`Attempting to check if bucket '${BUCKET_NAME}' exists and is accessible.`);
+        const exists = await minioClient.bucketExists(BUCKET_NAME); // This check is the focus
+        if (exists) {
+            console.log(`Bucket '${BUCKET_NAME}' already exists and is accessible. Proceeding.`);
         } else {
-            console.log(`Bucket '${BUCKET_NAME}' already exists.`);
+            // If bucketExists returns false, and we know it exists, then there's an auth/perm issue
+            console.error(`CRITICAL: Bucket '${BUCKET_NAME}' does NOT exist or could not be verified by Minio with current credentials. ` +
+                          `Please ensure it's created manually in Supabase Storage and that your service_role key has list/read permissions for buckets.`);
+            throw new Error(`S3 Bucket '${BUCKET_NAME}' not found or inaccessible (authentication/authorization issue).`);
         }
     } catch (e) {
-        console.error(`S3 Error Details for bucket '${BUCKET_NAME}':`);
+        console.error(`S3 Error Details during bucket existence check for '${BUCKET_NAME}':`);
         console.error(`  Error message: ${e.message}`);
         console.error(`  Error code: ${e.code}`);
         console.error(`  Error name: ${e.name}`);
-        console.error(`  Full error object:`, e); // This might reveal more properties
-        throw new Error(`S3 Bucket setup failed: ${e.message || e.code || 'Unknown S3 error'}`);
+        console.error(`  Full error object:`, JSON.stringify(e, null, 2)); // Stringify for better log output
+        throw new Error(`S3 Bucket existence check failed: ${e.message || e.code || 'Unknown S3 error during bucket check'}`);
     }
 };
+
 // 2. Email Setup
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-    // Use an App Password for Gmail, not your main password
-    // Ensure less secure app access is enabled if not using App Password (not recommended)
-    // For Render, ensure IP address resolution is not an issue (family: 4 often helps)
     family: 4
 });
 
 app.use(cors());
-// Increased body limit for potential larger file metadata or base64 uploads (though we use chunks)
 app.use(express.json({ limit: '50mb' }));
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
       console.log("Connected to MongoDB Cloud!");
-      // Ensure S3 bucket exists AFTER DB connection is established
-      return ensureBucketExists();
+      return ensureBucketExists(); // Ensure S3 bucket exists AFTER DB connection is established
   })
   .then(() => {
-      console.log("S3 Bucket setup confirmed.");
-      // Start server ONLY after both DB and S3 are ready
+      console.log("S3 Bucket setup confirmed. Server starting.");
       const PORT = process.env.PORT || 5000;
       app.listen(PORT, () => console.log(`Server Running on port ${PORT}`));
   })
   .catch(err => {
       console.error("CRITICAL STARTUP ERROR: MongoDB or S3 Bucket Connection Error:", err.message);
-      // Exit process if a critical dependency fails
-      process.exit(1);
+      process.exit(1); // Exit process if a critical dependency fails
   });
 
 
@@ -111,7 +110,7 @@ const User = mongoose.model('User', {
     email: { type: String, unique: true, required: true, lowercase: true, trim: true },
     password: { type: String, required: true },
     vaultPIN: String,
-    isVerified: { type: Boolean, default: true }, // Verified by default, OTP for recovery
+    isVerified: { type: Boolean, default: true },
     otp: String,
     otpExpires: Date,
     storageUsed: { type: Number, default: 0 },
@@ -130,7 +129,7 @@ const Folder = mongoose.model('Folder', {
 const File = mongoose.model('File', {
     fileName: String,
     fileSize: Number,
-    s3Path: String, // Changed from 'path' to 's3Path' to avoid conflict with Node.js path module
+    s3Path: String,
     parentFolder: { type: mongoose.Schema.Types.ObjectId, ref: 'Folder', default: null },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     isStarred: { type: Boolean, default: false },
@@ -171,7 +170,7 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(400).json({ error: "An account with this email already exists." });
         }
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ name, email, password: hashedPassword, isVerified: true }); // No OTP for initial signup
+        const user = new User({ name, email, password: hashedPassword, isVerified: true });
         await user.save();
         res.status(201).json({ success: true, message: "Registration successful!" });
     } catch (e) {
@@ -190,7 +189,7 @@ app.post('/api/auth/login', async (req, res) => {
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).json({ error: "Invalid credentials." });
         }
-        const token = jwt.sign({ id: user._id, email: user.email }, SECRET, { expiresIn: '1h' }); // Token expires in 1 hour
+        const token = jwt.sign({ id: user._id, email: user.email }, SECRET, { expiresIn: '1h' });
         res.json({ token, userName: user.name, userId: user._id });
     } catch (e) {
         console.error("Login failed:", e);
@@ -207,7 +206,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         }
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         user.otp = otp;
-        user.otpExpires = Date.now() + 600000; // OTP valid for 10 minutes
+        user.otpExpires = Date.now() + 600000;
         await user.save();
 
         await transporter.sendMail({
@@ -231,13 +230,13 @@ app.post('/api/auth/reset-password', async (req, res) => {
         const user = await User.findOne({
             email,
             otp,
-            otpExpires: { $gt: Date.now() } // OTP must not be expired
+            otpExpires: { $gt: Date.now() }
         });
         if (!user) {
             return res.status(400).json({ error: "Invalid or expired OTP." });
         }
         user.password = await bcrypt.hash(newPassword, 10);
-        user.otp = undefined; // Clear OTP after use
+        user.otp = undefined;
         user.otpExpires = undefined;
         await user.save();
         res.json({ success: true, message: "Password reset successful!" });
@@ -252,16 +251,13 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
         const userId = req.user.id;
         const files = await File.find({ owner: userId });
 
-        // Delete files from S3
         for (let f of files) {
             try {
                 await minioClient.removeObject(BUCKET_NAME, f.s3Path);
             } catch (s3Err) {
                 console.warn(`Could not delete file ${f.s3Path} from S3: ${s3Err.message}`);
-                // Continue even if one file fails to delete from S3
             }
         }
-        // Delete all user data from MongoDB
         await File.deleteMany({ owner: userId });
         await Folder.deleteMany({ owner: userId });
         await User.findByIdAndDelete(userId);
@@ -277,7 +273,7 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     try {
         const { folderId, tab } = req.query;
-        let filter = { owner: req.user.id, isTrash: false }; // Default filter
+        let filter = { owner: req.user.id, isTrash: false };
         let folderFilter = { owner: req.user.id, isTrash: false };
 
         if (tab === 'shared') {
@@ -295,16 +291,16 @@ app.get('/api/drive/contents', authenticate, async (req, res) => {
         } else if (tab === 'trash') {
             filter.isTrash = true;
             folderFilter.isTrash = true;
-            filter.isStarred = { $ne: true }; // Don't show starred items in trash unless specifically starred in trash
+            filter.isStarred = { $ne: true };
             folderFilter.isStarred = { $ne: true };
         } else if (tab === 'vault') {
             const user = await User.findById(req.user.id);
-            if (!user || !req.query.vaultUnlocked) { // Frontend should send vaultUnlocked=true after PIN entry
+            if (!user || !req.query.vaultUnlocked) {
                 return res.status(403).json({ error: "Vault access denied. Please unlock your vault." });
             }
             filter.isVault = true;
             folderFilter.isVault = true;
-        } else { // 'files' or root view
+        } else {
             filter.isVault = false;
             folderFilter.isVault = false;
             filter.parentFolder = folderId === "null" ? null : folderId;
@@ -378,12 +374,11 @@ app.post('/api/files/share', authenticate, async (req, res) => {
         const expiry = hours > 0 ? new Date(Date.now() + hours * 3600000) : null;
         const newShare = { email: email.toLowerCase(), role, expiresAt: expiry };
 
-        // Prevent duplicate shares to the same email
         const existingShareIndex = file.sharedWith.findIndex(s => s.email === newShare.email);
         if (existingShareIndex > -1) {
-            file.sharedWith[existingShareIndex] = newShare; // Update existing share
+            file.sharedWith[existingShareIndex] = newShare;
         } else {
-            file.sharedWith.push(newShare); // Add new share
+            file.sharedWith.push(newShare);
         }
         await file.save();
         res.json({ success: true, message: "File sharing updated successfully." });
@@ -406,10 +401,9 @@ app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
             }
             try {
                 await minioClient.removeObject(BUCKET_NAME, file.s3Path);
-                await User.findByIdAndUpdate(userId, { $inc: { storageUsed: -file.fileSize } }); // Decrement storage
+                await User.findByIdAndUpdate(userId, { $inc: { storageUsed: -file.fileSize } });
             } catch (s3Err) {
                 console.error(`S3 deletion failed for file ${file.s3Path}: ${s3Err.message}`);
-                // Still proceed to delete DB entry as S3 might be out of sync or partially deleted
             }
             await File.deleteOne({ _id: id });
             res.json({ success: true, message: "File deleted successfully." });
@@ -418,8 +412,6 @@ app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
             if (!folder) {
                 return res.status(404).json({ error: "Folder not found or you don't own it." });
             }
-            // Logic to delete contents of the folder recursively (for simplicity, only deletes empty folders for now)
-            // In a real app, you'd iterate and delete nested files/folders from S3 and DB
             const childFiles = await File.find({ parentFolder: id, owner: userId });
             const childFolders = await Folder.find({ parentFolder: id, owner: userId });
 
@@ -440,7 +432,7 @@ app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
 
 
 // --- UPLOAD & STORAGE ---
-const upload = multer({ dest: '/tmp/' }); // Use /tmp for Render's ephemeral storage
+const upload = multer({ dest: '/tmp/' });
 
 app.post('/api/upload/initialize', authenticate, (req, res) => {
     try {
@@ -475,35 +467,38 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) =
 
 
 app.post('/api/upload/complete', authenticate, async (req, res) => {
+    const { fileName, uploadId, folderId, isVault } = req.body;
+    const tempFileName = `${uploadId}-${fileName}`;
+    const tempFilePath = path.join('/tmp', tempFileName);
+
     try {
-        const { fileName, uploadId, folderId, isVault } = req.body;
         if (!fileName || !uploadId) {
             return res.status(400).json({ error: "Filename and upload ID are required for completion." });
         }
 
-        const tempFileName = `${uploadId}-${fileName}`;
-        const tempFilePath = path.join('/tmp', tempFileName);
-
         if (!fs.existsSync(tempFilePath)) {
-            return res.status(404).json({ error: "Temporary file not found, upload might have failed earlier." });
+            console.error(`UPLOAD COMPLETE ERROR: Temporary file not found at ${tempFilePath}`);
+            return res.status(404).json({ error: "Temporary file not found, upload might have failed earlier or was not fully chunked." });
         }
 
         const fileStats = fs.statSync(tempFilePath);
         const fileSize = fileStats.size;
 
         const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ error: "User not found." });
+        if (!user) {
+            fs.unlinkSync(tempFilePath); // Clean up temp file
+            return res.status(404).json({ error: "User not found." });
+        }
 
         if (user.storageUsed + fileSize > user.storageLimit) {
             fs.unlinkSync(tempFilePath); // Clean up temp file
             return res.status(403).json({ error: "Storage limit exceeded." });
         }
 
-        // Generate a unique S3 path for the file (e.g., user_id/file_id-filename)
         const s3ObjectPath = `${req.user.id}/${Date.now()}-${fileName}`;
+        console.log(`Attempting S3 upload for file: ${fileName} to path: ${s3ObjectPath}`);
 
-        // Using fPutObject to upload from a local file path to S3
-        await minioClient.fPutObject(BUCKET_NAME, s3ObjectPath, tempFilePath);
+        await minioClient.fPutObject(BUCKET_NAME, s3ObjectPath, tempFilePath); // <--- Critical upload step
 
         const file = new File({
             fileName,
@@ -517,11 +512,27 @@ app.post('/api/upload/complete', authenticate, async (req, res) => {
 
         await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: fileSize } });
 
-        fs.unlinkSync(tempFilePath); // Clean up temporary file after successful S3 upload
         res.status(201).json(file);
     } catch (e) {
-        console.error("Upload complete failed:", e);
-        res.status(500).json({ error: "Failed to complete upload due to a server error: " + e.message });
+        console.error("UPLOAD COMPLETE FAILED SERVER-SIDE:");
+        console.error(`  Error uploading file ${fileName} for user ${req.user.id}:`);
+        console.error(`  Error message: ${e.message}`);
+        console.error(`  Error code: ${e.code}`);
+        console.error(`  Error name: ${e.name}`);
+        console.error(`  Full error object:`, JSON.stringify(e, null, 2)); // Stringify for better log output
+
+        // Ensure temporary file is cleaned up even if S3 upload fails
+        if (fs.existsSync(tempFilePath)) {
+            try {
+                fs.unlinkSync(tempFilePath);
+                console.log(`Cleaned up temporary file: ${tempFilePath}`);
+            } catch (cleanupErr) {
+                console.error(`Error cleaning up temporary file ${tempFilePath}: ${cleanupErr.message}`);
+            }
+        }
+
+        // Respond with a more informative error message
+        res.status(500).json({ error: "Failed to complete upload due to a server error. Please check server logs for details." });
     }
 });
 
@@ -532,7 +543,6 @@ app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
             return res.status(404).json({ error: "File not found." });
         }
 
-        // Check ownership or shared access
         const isOwner = file.owner.toString() === req.user.id;
         const isShared = file.sharedWith.some(
             s => s.email === req.user.email && (!s.expiresAt || new Date() < s.expiresAt)
@@ -542,7 +552,7 @@ app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
             return res.status(403).json({ error: "You do not have permission to view this file." });
         }
 
-        const presignedUrl = await minioClient.presignedUrl('GET', BUCKET_NAME, file.s3Path, 3600); // URL valid for 1 hour
+        const presignedUrl = await minioClient.presignedUrl('GET', BUCKET_NAME, file.s3Path, 3600);
         res.json({ url: presignedUrl });
     } catch (e) {
         console.error("Failed to get preview URL:", e);
@@ -570,13 +580,11 @@ app.post('/api/vault/unlock', authenticate, async (req, res) => {
         if (!user) return res.status(404).json({ error: "User not found." });
 
         if (!user.vaultPIN) {
-            // First time setting PIN
             user.vaultPIN = await bcrypt.hash(pin, 10);
             await user.save();
             return res.json({ success: true, message: "Vault PIN set successfully." });
         }
 
-        // Comparing existing PIN
         if (await bcrypt.compare(pin, user.vaultPIN)) {
             res.json({ success: true, message: "Vault unlocked successfully." });
         } else {
@@ -588,11 +596,10 @@ app.post('/api/vault/unlock', authenticate, async (req, res) => {
     }
 });
 
-// Generic route for updating starred status
 app.patch('/api/drive/star/:type/:id', authenticate, async (req, res) => {
     try {
         const { type, id } = req.params;
-        const { isStarred } = req.body; // Expect boolean true/false
+        const { isStarred } = req.body;
 
         const Model = type === 'file' ? File : Folder;
         const item = await Model.findOneAndUpdate(
@@ -610,16 +617,11 @@ app.patch('/api/drive/star/:type/:id', authenticate, async (req, res) => {
     }
 });
 
-// Middleware for handling 404 (Not Found) errors
 app.use((req, res, next) => {
     res.status(404).json({ error: "API endpoint not found." });
 });
 
-// Global error handler (should be the last app.use)
 app.use((err, req, res, next) => {
     console.error("Global server error:", err.stack);
     res.status(500).json({ error: "An unexpected server error occurred." });
 });
-
-// Removed app.listen from the global scope and moved it into the .then() block
-// of the mongoose.connect promise chain to ensure all services are ready.
