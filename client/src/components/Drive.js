@@ -1,4 +1,4 @@
-// Drive.js (UPDATED with Dark/Light Mode, Shared Sidebar, Manage Access, robust file upload, fixed navigation, and search)
+// Drive.js (UPDATED with Dark/Light Mode, Shared Sidebar, Manage Access, robust file upload, fixed navigation, search, starring, and vault toggle)
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
@@ -27,6 +27,7 @@ const Drive = () => {
     const [shareForm, setShareForm] = useState({ email: '', role: 'viewer', hours: 0 });
     const [uploadProgress, setUploadProgress] = useState({}); // To track progress of multiple files
     const [searchTerm, setSearchTerm] = useState(''); // For search functionality
+    const [isVaultUnlocked, setIsVaultUnlocked] = useState(false); // New state for vault status
 
     const navigate = useNavigate();
     const authConfig = useCallback(() => ({ 
@@ -42,7 +43,15 @@ const Drive = () => {
     const fetchData = useCallback(async () => {
         try {
             const fId = currentFolder ? currentFolder._id : "null"; // Use "null" string for root folder ID
-            const res = await axios.get(`${API}/drive/contents?folderId=${fId}&tab=${activeTab}`, authConfig());
+            const res = await axios.get(`${API}/drive/contents`, {
+                headers: authConfig().headers,
+                params: { 
+                    folderId: fId, 
+                    tab: activeTab,
+                    search: searchTerm, // Pass search term to backend
+                    vaultUnlocked: isVaultUnlocked // Pass vault unlocked status
+                }
+            });
             setFilesList(res.data.files || []); 
             setFoldersList(res.data.folders || []);
             
@@ -56,30 +65,30 @@ const Drive = () => {
             }
             alert(err.response?.data?.error || "Failed to load drive contents.");
         }
-    }, [currentFolder, activeTab, authConfig, navigate]);
+    }, [currentFolder, activeTab, authConfig, navigate, searchTerm, isVaultUnlocked]); // Add searchTerm and isVaultUnlocked to dependencies
 
     useEffect(() => { 
         fetchData(); 
-        // Close menus when folder changes
+        // Close menus when folder changes or data refreshes
         setActiveMenu(null); 
         setProfileOpen(false);
-    }, [fetchData, currentFolder]);
+    }, [fetchData, currentFolder, activeTab]); // Include activeTab in dependency array for immediate refresh on tab change
 
-    // --- NEW/UPDATED FILE UPLOAD LOGIC ---
+
+    // --- FILE UPLOAD LOGIC ---
     const handleUpload = async (event) => {
         const selectedFiles = Array.from(event.target.files);
         if (selectedFiles.length === 0) return;
 
         for (const file of selectedFiles) {
             try {
-                // Reset progress for this file
                 setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
 
-                // 1. Initialize upload (get uploadId)
+                // 1. Initialize upload
                 const initResponse = await axios.post(`${API}/upload/initialize`, {
                     fileName: file.name,
                     fileSize: file.size,
-                    mimeType: file.type // Send mimeType early if backend needs it
+                    mimeType: file.type 
                 }, authConfig());
                 const { uploadId } = initResponse.data;
                 console.log(`Upload for ${file.name} initialized with ID:`, uploadId);
@@ -93,8 +102,8 @@ const Drive = () => {
                     const formData = new FormData();
                     formData.append('chunk', chunk);
                     formData.append('uploadId', uploadId);
-                    formData.append('partNumber', partNumber); // Important for Minio MPU
-                    formData.append('fileName', file.name); // Include filename with chunk for debugging/tracking if needed
+                    formData.append('partNumber', partNumber); 
+                    formData.append('fileName', file.name); 
 
                     await axios.post(`${API}/upload/chunk`, formData, {
                         headers: {
@@ -112,54 +121,86 @@ const Drive = () => {
                 }
                 console.log(`All chunks for ${file.name} uploaded successfully.`);
 
-
                 // 3. Complete upload
                 const completeResponse = await axios.post(`${API}/upload/complete`, {
                     fileName: file.name,
                     uploadId: uploadId,
-                    folderId: currentFolder ? currentFolder._id : null, // Send null for root
-                    isVault: activeTab === 'vault', // Determine if it's a vault file
-                    mimeType: file.type, // CRITICAL: This was the missing piece!
-                    fileSize: file.size // Also good to send for verification
+                    folderId: currentFolder ? currentFolder._id : null, 
+                    isVault: activeTab === 'vault', 
+                    mimeType: file.type, 
+                    fileSize: file.size 
                 }, authConfig());
 
                 console.log(`File "${file.name}" uploaded successfully!`, completeResponse.data);
                 alert(`File "${file.name}" uploaded successfully!`);
-                setUploadProgress(prev => ({ ...prev, [file.name]: 100 })); // Mark as 100%
+                setUploadProgress(prev => ({ ...prev, [file.name]: 100 })); 
             } catch (err) {
                 console.error(`Error uploading file "${file.name}":`, err.response ? err.response.data : err.message);
                 alert(`Failed to upload file "${file.name}": ${err.response?.data?.error || err.message}`);
-                setUploadProgress(prev => ({ ...prev, [file.name]: -1 })); // Mark as failed
+                setUploadProgress(prev => ({ ...prev, [file.name]: -1 })); 
             }
         }
-        fetchData(); // Refresh contents after all uploads attempt to complete
-        event.target.value = null; // Clear input to allow re-uploading the same file
+        fetchData(); 
+        event.target.value = null; 
     };
-    // --- END NEW/UPDATED FILE UPLOAD LOGIC ---
+    // --- END FILE UPLOAD LOGIC ---
 
     // --- NAVIGATION HANDLERS ---
     const openFolder = (folder) => {
-        setPathHistory(prev => [...prev, currentFolder]); // Save current folder to history
-        setCurrentFolder(folder); // Set the folder object
+        // If currentFolder is not null, add it to history
+        if (currentFolder) {
+            setPathHistory(prev => [...prev, currentFolder]);
+        } else {
+            // If currentFolder is null (root), and we're navigating into a folder,
+            // ensure history correctly starts with 'null' if we ever need to go back from the first subfolder.
+            // Or, more simply, clear history if starting from root, and rely on `currentFolder` to indicate depth.
+            // For smoother breadcrumbs, let's keep it simple: push currentFolder, even if it's null, or better,
+            // only push valid folder objects.
+            // Let's refine pathHistory to only store previous *folder objects*
+            if(currentFolder) { // Only push actual folders to history
+                setPathHistory(prev => [...prev, currentFolder]);
+            }
+        }
+        setCurrentFolder(folder);
+        setSearchTerm(''); // Clear search when navigating
     };
 
     const goBack = () => {
         if (pathHistory.length > 0) {
-            const prevFolder = pathHistory.pop(); // Get last folder from history
-            setCurrentFolder(prevFolder); // Set the previous folder object (or null for root)
+            const prevFolder = pathHistory.pop(); // Get last folder object from history
+            setCurrentFolder(prevFolder); // Set currentFolder to the previous folder object (can be null for root)
             setPathHistory([...pathHistory]); // Update state to trigger re-render
+        } else {
+            setCurrentFolder(null); // Go to root if no history
+            setPathHistory([]);
         }
+        setSearchTerm(''); // Clear search when navigating
     };
 
-    const jumpToFolderInBreadcrumb = (index) => {
-        if (index === -1) { // Clicked "My Drive"
-            setCurrentFolder(null); 
-            setPathHistory([]); 
-        } else { // Clicked a folder in the breadcrumb
-            const newPathHistory = pathHistory.slice(0, index); 
-            setCurrentFolder(pathHistory[index]); // Set the folder object
-            setPathHistory(newPathHistory); 
+    const jumpToFolderInBreadcrumb = (folderToJumpTo) => {
+        // If jumping to null (My Drive)
+        if (folderToJumpTo === null) {
+            setCurrentFolder(null);
+            setPathHistory([]);
+        } else {
+            // Find the index of the folderToJumpTo in pathHistory
+            const index = pathHistory.findIndex(f => f._id === folderToJumpTo._id);
+            if (index !== -1) {
+                // If the folder is in history, slice the history up to that point
+                const newPathHistory = pathHistory.slice(0, index);
+                setCurrentFolder(pathHistory[index]); // Set the folder object
+                setPathHistory(newPathHistory);
+            } else if (currentFolder && currentFolder._id === folderToJumpTo._id) {
+                // Clicking the current folder in breadcrumb, do nothing or refresh
+                console.log("Already in this folder.");
+            } else {
+                // This case should ideally not happen if pathHistory is managed correctly
+                // It means trying to jump to a folder not in the direct ancestor path
+                setCurrentFolder(folderToJumpTo);
+                setPathHistory([]); // Reset history if jumping to an unrelated folder
+            }
         }
+        setSearchTerm(''); // Clear search when navigating
         setActiveMenu(null); 
     };
     // --- END NAVIGATION HANDLERS ---
@@ -192,7 +233,9 @@ const Drive = () => {
 
     const handleDownload = async (file) => {
         try {
-            const res = await axios.get(`${API}/files/download/${file._id}`, authConfig()); // Assuming /files/download for direct download URL
+            // Reusing the preview endpoint, as your backend doesn't have a distinct /files/download
+            // The preview endpoint returns a signed URL which, when opened, often triggers download.
+            const res = await axios.get(`${API}/drive/preview/${file._id}`, authConfig());
             const downloadUrl = res.data.url;
             window.open(downloadUrl, '_blank'); 
         } catch (err) {
@@ -206,19 +249,55 @@ const Drive = () => {
             return;
         }
         try {
-            if (type === 'file') {
-                await axios.delete(`${API}/files/${id}`, authConfig());
-                alert("File deleted successfully.");
-            } else if (type === 'folder') {
-                await axios.delete(`${API}/folders/${id}`, authConfig());
-                alert("Folder and its contents deleted successfully.");
-            }
+            // Updated to match your backend's /api/drive/delete/:type/:id endpoint
+            await axios.delete(`${API}/drive/delete/${type}/${id}`, authConfig());
+            alert(`${type} deleted successfully.`);
             fetchData();
         } catch (err) {
             console.error("Delete error:", err.response?.data || err);
             alert(`Failed to delete ${type}: ${err.response?.data?.error || "Unknown error."}`);
         }
     };
+
+    const handleStarToggle = async (type, item) => {
+        try {
+            // Your backend has PATCH /api/drive/star/:type/:id
+            await axios.patch(`${API}/drive/star/${type}/${item._id}`, { isStarred: !item.isStarred }, authConfig());
+            alert(`${item.name || item.fileName} ${!item.isStarred ? 'starred' : 'unstarred'} successfully.`);
+            fetchData();
+        } catch (err) {
+            console.error("Star toggle error:", err.response?.data || err);
+            alert(`Failed to update star status: ${err.response?.data?.error || "Unknown error."}`);
+        } finally {
+            setActiveMenu(null);
+        }
+    };
+
+    // **IMPORTANT**: Your backend's /api/drive/move only changes parentFolder, not isVault.
+    // To move items to/from vault, you'd ideally need dedicated backend endpoints
+    // like PATCH /api/files/vault/:id and PATCH /api/folders/vault/:id that update the 'isVault' field.
+    // For now, I'll add a placeholder action that will *not* work without backend changes.
+    const handleToggleVaultStatus = async (type, item) => {
+        // This function requires backend support to toggle `isVault` status.
+        // Your current backend's /api/drive/move only updates `parentFolder`.
+        // You would need an endpoint like PATCH /api/drive/toggle-vault/:type/:id
+        alert("Moving items to/from Vault is not yet supported by the backend 'move' endpoint. Please implement a dedicated backend route to change 'isVault' status.");
+        // Example of what the call *would* look like if you had a backend endpoint for this:
+        /*
+        try {
+            await axios.patch(`${API}/drive/toggle-vault/${type}/${item._id}`, { isVault: !item.isVault }, authConfig());
+            alert(`${item.name || item.fileName} ${!item.isVault ? 'moved to' : 'removed from'} Vault.`);
+            fetchData();
+        } catch (err) {
+            console.error("Vault toggle error:", err.response?.data || err);
+            alert(`Failed to update vault status: ${err.response?.data?.error || "Unknown error."}`);
+        } finally {
+            setActiveMenu(null);
+        }
+        */
+       setActiveMenu(null); // Close menu regardless
+    };
+
 
     const theme = { 
         bg: isDark ? '#0f172a' : '#f8fafc', 
@@ -273,11 +352,13 @@ const Drive = () => {
         }
     };
 
-    // Filtered lists for display based on search term
-    const filteredFolders = foldersList.filter(folder => 
+    // Filtered lists for display based on search term (now applied to the fetched data)
+    // The actual filtering should ideally happen on the backend when searchTerm is sent.
+    // If backend doesn't filter, this is a client-side filter.
+    const displayFolders = foldersList.filter(folder => 
         folder.name.toLowerCase().includes(searchTerm.toLowerCase())
     );
-    const filteredFiles = filesList.filter(file => 
+    const displayFiles = filesList.filter(file => 
         file.fileName.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
@@ -286,21 +367,27 @@ const Drive = () => {
             {/* Sidebar */}
             <aside style={{ width: 280, borderRight: `1px solid ${theme.border}`, padding: '30px 15px', display: 'flex', flexDirection: 'column', gap: 5, background: theme.card }}>
                 <h1 style={{fontSize:20, fontWeight:'bold', marginBottom:30}}>Cloudly</h1>
-                <div style={activeTab === 'files' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('files'); setCurrentFolder(null); setPathHistory([]);}}><LayoutGrid size={20}/> My Drive</div>
-                <div style={activeTab === 'shared' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('shared'); setCurrentFolder(null); setPathHistory([]);}}><Users size={20}/> Shared with me</div>
-                <div style={activeTab === 'starred' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
-                <div style={activeTab === 'vault' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={async ()=>{ 
+                <div style={activeTab === 'files' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('files'); setCurrentFolder(null); setPathHistory([]); setIsVaultUnlocked(false);}}><LayoutGrid size={20}/> My Drive</div>
+                <div style={activeTab === 'shared' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('shared'); setCurrentFolder(null); setPathHistory([]); setIsVaultUnlocked(false);}}><Users size={20}/> Shared with me</div>
+                <div style={activeTab === 'starred' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('starred'); setIsVaultUnlocked(false);}}><Star size={20}/> Starred</div>
+                <div style={activeTab === 'vault' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={async (e)=>{ 
+                    e.stopPropagation(); // Prevent immediate menu close
                     const p = prompt("Enter Vault PIN:"); 
                     if (p) {
                         try {
                             await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig());
                             setActiveTab('vault');
-                            setCurrentFolder(null); // Reset path for vault
+                            setCurrentFolder(null); 
                             setPathHistory([]);
+                            setIsVaultUnlocked(true); // Vault is now unlocked
                             alert("Vault unlocked!");
                         } catch (err) {
                             alert(err.response?.data?.error || "Failed to unlock vault.");
+                            setIsVaultUnlocked(false);
                         }
+                    } else {
+                        // User cancelled PIN entry
+                        setIsVaultUnlocked(false);
                     }
                 }}><Shield size={20} color="#ef4444"/> Vault</div>
                 <div style={dynamicStyles.storageBox}> 
@@ -337,11 +424,11 @@ const Drive = () => {
 
                 <div style={{ padding: 40, flex: 1, overflowY: 'auto' }}>
                     <div style={dynamicStyles.breadcrumb}>
-                        <span onClick={() => jumpToFolderInBreadcrumb(-1)} style={{cursor:'pointer'}}>My Drive</span>
+                        <span onClick={() => jumpToFolderInBreadcrumb(null)} style={{cursor:'pointer'}}>My Drive</span>
                         {pathHistory.map((folder, i) => (
-                            <span key={folder._id || `root-${i}`}> 
+                            <span key={folder._id}> 
                                 <ChevronRight size={16} style={{display:'inline'}}/> 
-                                <span onClick={()=>{jumpToFolderInBreadcrumb(i)}} style={{cursor:'pointer'}}>{folder?.name || 'Root'}</span>
+                                <span onClick={()=>{jumpToFolderInBreadcrumb(folder)}} style={{cursor:'pointer'}}>{folder.name}</span>
                             </span>
                         ))}
                          {currentFolder && (
@@ -362,7 +449,7 @@ const Drive = () => {
                     </div>
 
                     <div style={dynamicStyles.grid}>
-                        {filteredFolders.map(f => (
+                        {displayFolders.map(f => (
                             <div key={`folder-${f._id}`} style={{...dynamicStyles.card}} onDoubleClick={()=>{openFolder(f)}}>
                                 <Folder size={48} color="#fbbf24" fill="#fbbf24" style={{opacity:0.7}}/>
                                 <p style={{marginTop:15, fontWeight:'bold', color:theme.text}}>{f.name}</p>
@@ -371,14 +458,20 @@ const Drive = () => {
                                 )}
                                 {activeMenu === `folder-${f._id}` && (
                                     <div style={{...dynamicStyles.drop}}>
-                                        <div onClick={(e)=>{e.stopPropagation(); openFolder(f)}}><Eye size={14}/> Open</div> {/* Fixed: uses openFolder */}
+                                        <div onClick={(e)=>{e.stopPropagation(); openFolder(f)}}><Eye size={14}/> Open</div> 
+                                        {activeTab !== 'vault' && ( // Cannot star/vault folders directly from vault tab
+                                            <div onClick={(e)=>{e.stopPropagation(); handleStarToggle('folder', f)}}><Star size={14}/> {f.isStarred ? 'Unstar' : 'Star'}</div>
+                                        )}
+                                        {activeTab !== 'vault' && ( // Only move to vault from non-vault tabs
+                                            <div onClick={(e)=>{e.stopPropagation(); handleToggleVaultStatus('folder', f)}}><Shield size={14}/> Move to Vault</div>
+                                        )}
                                         <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Enter target folder ID to move to (or 'root' for main drive):"); if(tid) axios.patch(`${API}/drive/move`, {type:'folder', itemId:f._id, targetId:tid==='root'?null:tid}, authConfig()).then(fetchData).catch(err => alert(err.response?.data?.error || "Failed to move folder."))}}><Move size={14}/> Move</div>
                                         <div style={{color:'red'}} onClick={(e)=>{e.stopPropagation(); handleDelete('folder', f._id)}}><Trash2 size={14}/> Delete</div>
                                     </div>
                                 )}
                             </div>
                         ))}
-                        {filteredFiles.map(f => (
+                        {displayFiles.map(f => (
                             <div key={`file-${f._id}`} style={{...dynamicStyles.card}}>
                                 <FileText size={48} color={theme.accent}/>
                                 <p style={{marginTop:15, fontSize:13, color:theme.text}}>{f.fileName}</p>
@@ -394,10 +487,16 @@ const Drive = () => {
                                 <MoreVertical style={dynamicStyles.dots} onClick={(e)=>{e.stopPropagation(); setActiveMenu(`file-${f._id}`)}}/>
                                 {activeMenu === `file-${f._id}` && (
                                     <div style={{...dynamicStyles.drop}}>
-                                        <div onClick={(e)=>{e.stopPropagation(); axios.get(`${API}/files/preview/${f._id}`, authConfig()).then(res => setPreviewFile(res.data.url)).catch(err => alert(err.response?.data?.error || "Failed to preview file."))}}><Eye size={14}/> Preview</div>
+                                        <div onClick={(e)=>{e.stopPropagation(); axios.get(`${API}/drive/preview/${f._id}`, authConfig()).then(res => setPreviewFile(res.data.url)).catch(err => alert(err.response?.data?.error || "Failed to preview file."))}}><Eye size={14}/> Preview</div>
                                         <div onClick={(e)=>{e.stopPropagation(); handleDownload(f)}}><Download size={14}/> Download</div>
+                                        {activeTab !== 'vault' && (
+                                            <div onClick={(e)=>{e.stopPropagation(); handleStarToggle('file', f)}}><Star size={14}/> {f.isStarred ? 'Unstar' : 'Star'}</div>
+                                        )}
                                         {f.owner === localStorage.getItem("userId") && ( // Only owner can move/share/delete
                                             <>
+                                                {activeTab !== 'vault' && ( // Only move to vault from non-vault tabs
+                                                    <div onClick={(e)=>{e.stopPropagation(); handleToggleVaultStatus('file', f)}}><Shield size={14}/> Move to Vault</div>
+                                                )}
                                                 <div onClick={(e)=>{e.stopPropagation(); openShareModal(f)}}><Share2 size={14}/> Share</div>
                                                 <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Enter target folder ID to move to (or 'root' for main drive):"); if(tid) axios.patch(`${API}/drive/move`, {type:'file', itemId:f._id, targetId:tid==='root'?null:tid}, authConfig()).then(fetchData).catch(err => alert(err.response?.data?.error || "Failed to move file."))}}><Move size={14}/> Move</div>
                                                 <div style={{color:'red'}} onClick={(e)=>{e.stopPropagation(); handleDelete('file', f._id)}}><Trash2 size={14}/> Delete</div>
@@ -408,7 +507,7 @@ const Drive = () => {
                             </div>
                         ))}
                     </div>
-                    {filteredFiles.length === 0 && filteredFolders.length === 0 && (
+                    {displayFiles.length === 0 && displayFolders.length === 0 && (
                         <p style={{textAlign:'center', marginTop:50, color:theme.text}}>No items found in this {activeTab === 'files' ? 'folder' : activeTab} or matching your search.</p>
                     )}
                 </div>
