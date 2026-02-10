@@ -423,3 +423,60 @@ app.post('/api/vault/unlock', authenticate, async (req, res) => {
     if (await bcrypt.compare(req.body.pin, u.vaultPIN)) res.json({ success: true });
     else res.status(403).json({ error: "Fail" });
 });
+//Email otp
+// --- FORGOT PASSWORD: STEP 1 (Send OTP) ---
+app.post('/api/auth/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        const user = await User.findOne({ email: email.toLowerCase() });
+        
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        // Generate 6-digit OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        
+        // Save OTP and Expiry (10 minutes)
+        user.otp = otp;
+        user.otpExpires = Date.now() + 600000; 
+        await user.save();
+
+        // Send Email
+        await transporter.sendMail({
+            from: `"Cloudly Support" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: "Password Reset OTP",
+            text: `Your OTP for password reset is: ${otp}. It expires in 10 minutes.`
+        });
+
+        res.json({ success: true, message: "OTP sent to email" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to send email" });
+    }
+});
+
+// --- FORGOT PASSWORD: STEP 2 (Verify & Reset) ---
+app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+        const { email, otp, newPassword } = req.body;
+        
+        const user = await User.findOne({ 
+            email: email.toLowerCase(), 
+            otp, 
+            otpExpires: { $gt: Date.now() } 
+        });
+
+        if (!user) return res.status(400).json({ error: "Invalid or expired OTP" });
+
+        // Hash new password and clear OTP fields
+        user.password = await bcrypt.hash(newPassword, 10);
+        user.otp = undefined;
+        user.otpExpires = undefined;
+        await user.save();
+
+        res.json({ success: true, message: "Password reset successful" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to reset password" });
+    }
+});
