@@ -9,11 +9,12 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const Minio = require('minio');
 const nodemailer = require('nodemailer');
+const pdf = require('pdf-parse'); 
 
 const app = express();
 const SECRET = process.env.JWT_SECRET || "FINAL_DRIVE_PRO_2026";
 
-// 1. Supabase S3 Setup
+// 1. Storage Setup
 const minioClient = new Minio.Client({
     endPoint: (process.env.S3_ENDPOINT || '').replace('https://', '').split('/')[0], 
     port: 443, useSSL: true,
@@ -23,17 +24,15 @@ const minioClient = new Minio.Client({
 });
 const BUCKET_NAME = 'cloudly';
 
-// 2. Email Setup - FORCED IPv4 TO FIX RENDER ERROR
+// 2. Email Setup
 const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    host: 'smtp.gmail.com', port: 465, secure: true,
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-    family: 4 // <--- THIS FIXES THE ENETUNREACH ERROR
+    family: 4 
 });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 mongoose.connect(process.env.MONGO_URI);
 
@@ -49,15 +48,36 @@ const authenticate = (req, res, next) => {
     try { req.user = jwt.verify(token, SECRET); next(); } catch (err) { res.status(401).send("Invalid"); }
 };
 
-// --- NUCLEAR RESET (To clear your old broken accounts) ---
+// --- NUCLEAR RESET ---
 app.get('/api/auth/nuclear-reset', async (req, res) => {
     await User.deleteMany({});
     await File.deleteMany({});
     await Folder.deleteMany({});
-    res.send("Database Wiped. Start fresh now.");
+    res.send("Database Wiped Clean. You can now register again.");
 });
 
-// --- AUTH & OTP ---
+// --- AI CHAT (FIXED PDF) ---
+app.post('/api/ai/chat', authenticate, async (req, res) => {
+    try {
+        const file = await File.findById(req.body.fileId);
+        const stream = await minioClient.getObject(BUCKET_NAME, file.path);
+        let chunks = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        const buffer = Buffer.concat(chunks);
+        let text = "";
+        if (file.fileName.toLowerCase().endsWith('.pdf')) {
+            const data = await pdf(buffer);
+            text = data.text;
+        } else { text = buffer.toString(); }
+        const { GoogleGenerativeAI } = require("@google/generative-ai");
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(`Context: ${text.slice(0, 7000)}\n\nQuestion: ${req.body.question}`);
+        res.json({ answer: result.response.text() });
+    } catch (e) { res.status(500).json({ answer: "AI Error: Could not read file." }); }
+});
+
+// --- AUTH & VAULT ---
 app.post('/api/auth/register', async (req, res) => {
     try {
         const email = req.body.email.toLowerCase().trim();
@@ -84,38 +104,49 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ token: jwt.sign({ id: user._id, email: user.email }, SECRET), userName: user.name });
 });
 
-// --- DRIVE LOGIC (CONTENTS, STORAGE, UPLOAD, DELETE) ---
+app.post('/api/vault/unlock', authenticate, async (req, res) => {
+    const user = await User.findById(req.user.id);
+    if (!user.vaultPIN) { user.vaultPIN = await bcrypt.hash(req.body.pin, 10); await user.save(); return res.json({ unlocked: true }); }
+    if (await bcrypt.compare(req.body.pin, user.vaultPIN)) res.json({ unlocked: true });
+    else res.status(403).send("Wrong");
+});
+
+// --- DRIVE FEATURES ---
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     const { folderId, tab } = req.query;
     let filter = { owner: req.user.id };
     if (tab === 'starred') filter.starred = true;
     else if (tab === 'trash') filter.isTrash = true;
     else if (tab === 'vault') filter.isVault = true;
-    else { filter.isVault = false; filter.isTrash = false; filter.parentFolder = folderId === "null" ? null : folderId; }
+    else if (tab === 'shared') {
+        const user = await User.findById(req.user.id);
+        const shared = await File.find({ "sharedWith.email": user.email });
+        return res.json({ folders: [], files: shared });
+    } else { filter.isVault = false; filter.isTrash = false; filter.parentFolder = folderId === "null" ? null : folderId; }
     res.json({ folders: await Folder.find(filter), files: await File.find(filter) });
 });
 
-// ... (Keep all other routes: storage, move, upload, preview from previous turn)
-app.post('/api/drive/folder', authenticate, async (req, res) => {
-    const folder = new Folder({ ...req.body, owner: req.user.id });
-    await folder.save(); res.json(folder);
+app.get('/api/drive/storage', authenticate, async (req, res) => {
+    const files = await File.find({ owner: req.user.id });
+    res.json({ used: files.reduce((acc, f) => acc + f.fileSize, 0), limit: 32212254720 });
 });
 
-app.patch('/api/drive/move', authenticate, async (req, res) => {
-    const Model = req.body.type === 'file' ? File : Folder;
-    await Model.findByIdAndUpdate(req.body.itemId, { 
-        parentFolder: req.body.targetId === 'root' ? null : req.body.targetId,
-        isVault: req.body.toVault || false
-    });
+app.patch('/api/files/move', authenticate, async (req, res) => {
+    await File.findByIdAndUpdate(req.body.fileId, { parentFolder: req.body.targetId === 'root' ? null : req.body.targetId });
+    res.json({ msg: "Moved" });
+});
+
+app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
+    const userId = req.user.id;
+    const files = await File.find({ owner: userId });
+    for (let f of files) { try { await minioClient.removeObject(BUCKET_NAME, f.path); } catch(e){} }
+    await File.deleteMany({ owner: userId });
+    await Folder.deleteMany({ owner: userId });
+    await User.findByIdAndDelete(userId);
     res.json({ success: true });
 });
 
-app.get('/api/drive/storage', authenticate, async (req, res) => {
-    const user = await User.findById(req.user.id);
-    res.json({ used: user.storageUsed, limit: 32212254720 }); // 30GB
-});
-
-// --- UPLOAD ---
+// --- SYSTEM ---
 const upload = multer({ dest: '/tmp/' });
 app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
 app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
@@ -127,15 +158,13 @@ app.post('/api/upload/complete', authenticate, async (req, res) => {
     const name = `${req.body.uploadId}-${req.body.fileName}`;
     const tPath = path.join('/tmp', name);
     await minioClient.fPutObject(BUCKET_NAME, name, tPath);
-    const file = new File({ fileName: req.body.fileName, fileSize: fs.statSync(tPath).size, path: name, parentFolder: req.body.folderId || null, owner: req.user.id, isVault: req.body.isVault === true });
-    await file.save(); 
-    await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: fs.statSync(tPath).size } });
-    fs.unlinkSync(tPath); res.json(file);
+    const file = new File({ fileName: req.body.fileName, fileSize: fs.statSync(tPath).size, path: name, parentFolder: req.body.folderId || null, owner: req.user.id, isVault: req.body.isVault === 'true' });
+    await file.save(); fs.unlinkSync(tPath); res.json(file);
 });
 
-app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
-    const f = await File.findById(req.params.id);
-    res.json({ url: await minioClient.presignedUrl('GET', BUCKET_NAME, f.path, 3600) });
+app.get('/api/files/preview/:id', authenticate, async (req, res) => {
+    const file = await File.findById(req.params.id);
+    res.json({ url: await minioClient.presignedUrl('GET', BUCKET_NAME, file.path, 3600) });
 });
 
 app.listen(process.env.PORT || 5000, () => console.log("Server Running"));
