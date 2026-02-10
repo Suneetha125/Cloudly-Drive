@@ -1,155 +1,78 @@
-const express = require('express');
-const router = express.Router();
-const User = require('../models/User');
-const File = require('../models/File');
-const Folder = require('../models/Folder');
-const nodemailer = require('nodemailer');
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
-const Minio = require('minio');
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { HardDrive, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 
-// 1. MinIO Setup for Deletion
-const minioClient = new Minio.Client({
-    endPoint: process.env.S3_ENDPOINT || '',
-    port: 443, useSSL: true,
-    accessKey: process.env.S3_ACCESS_KEY,
-    secretKey: process.env.S3_SECRET_KEY,
-    pathStyle: true
-});
-const BUCKET_NAME = 'cloudly';
+const API = "https://cloudly-dj52.onrender.com/api";
 
-// 2. Nodemailer with IPv4 Fix for Render
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-    family: 4 // <--- CRITICAL FIX FOR RENDER
-});
+const Auth = () => {
+    const [mode, setMode] = useState('login'); // login, signup, forgot, reset
+    const [showPassword, setShowPassword] = useState(false);
+    const [form, setForm] = useState({ name: '', email: '', password: '', otp: '' });
+    const navigate = useNavigate();
 
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        try {
+            if (mode === 'signup') {
+                await axios.post(`${API}/auth/register`, form);
+                alert("Account Created! You can now login.");
+                setMode('login');
+            } else if (mode === 'forgot') {
+                await axios.post(`${API}/auth/forgot-password`, { email: form.email });
+                alert("Recovery OTP sent to your email!");
+                setMode('reset');
+            } else if (mode === 'reset') {
+                await axios.post(`${API}/auth/reset-password`, { email: form.email, otp: form.otp, newPassword: form.password });
+                alert("Password Updated! Please login.");
+                setMode('login');
+            } else {
+                const res = await axios.post(`${API}/auth/login`, form);
+                localStorage.setItem("token", res.data.token);
+                localStorage.setItem("userName", res.data.userName);
+                navigate("/drive");
+            }
+        } catch (err) { alert(err.response?.data?.error || "Action failed."); }
+    };
 
-const sendOTP = async (email, otp) => {
-    await transporter.sendMail({
-        from: `"Cloudly Support" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: 'Cloudly Security Code',
-        text: `Your security code is ${otp}. It expires in 10 minutes.`,
-    });
+    return (
+        <div style={styles.container}>
+            <div style={styles.card}>
+                <div style={{textAlign:'center', marginBottom:30}}>
+                    <HardDrive size={50} color="#3b82f6" />
+                    <h2 style={{marginTop:10}}>{mode === 'login' ? 'Login' : mode === 'signup' ? 'Sign Up' : mode === 'forgot' ? 'Recover' : 'Reset'}</h2>
+                </div>
+                <form onSubmit={handleSubmit} style={{display:'flex', flexDirection:'column', gap:15}}>
+                    {mode === 'signup' && <div style={styles.inputGroup}><User size={18}/><input style={styles.inputNo} placeholder="Name" onChange={e=>setForm({...form, name: e.target.value})} required /></div>}
+                    
+                    {mode !== 'reset' && <div style={styles.inputGroup}><Mail size={18}/><input style={styles.inputNo} type="email" placeholder="Email" onChange={e=>setForm({...form, email: e.target.value})} required /></div>}
+                    
+                    {mode === 'reset' && <input style={styles.inputFull} placeholder="6-Digit OTP" onChange={e=>setForm({...form, otp: e.target.value})} required />}
+                    
+                    {mode !== 'forgot' && (
+                        <div style={styles.inputGroup}>
+                            <Lock size={18}/>
+                            <input style={styles.inputNo} type={showPassword ? "text" : "password"} placeholder={mode === 'reset' ? "New Password" : "Password"} onChange={e=>setForm({...form, password: e.target.value})} required />
+                            <div onClick={()=>setShowPassword(!showPassword)} style={{cursor:'pointer'}}>{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</div>
+                        </div>
+                    )}
+                    <button style={styles.btn} type="submit">Continue</button>
+                    <p onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} style={styles.toggle}>{mode === 'login' ? "Need an account? Sign up" : "Already have an account? Login"}</p>
+                    {mode === 'login' && <p onClick={()=>setMode('forgot')} style={{textAlign:'center', fontSize:12, cursor:'pointer', color:'gray'}}>Forgot Password?</p>}
+                </form>
+            </div>
+        </div>
+    );
 };
 
-// Signup
-router.post('/signup', async (req, res) => {
-    try {
-        const { email, password, name } = req.body;
-        let user = await User.findOne({ email: email.toLowerCase() });
-        if (user) return res.status(400).json({ error: 'Account already exists' });
+const styles = {
+    container: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#f8fafc' },
+    card: { background: '#fff', padding: 40, borderRadius: 24, boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)', width: 400 },
+    inputGroup: { display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderRadius: 12, border: '1px solid #e2e8f0', background: '#f1f5f9' },
+    inputNo: { border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: 15 },
+    inputFull: { padding: 14, borderRadius: 12, border: '1px solid #e2e8f0', background: '#f1f5f9', outline: 'none' },
+    btn: { padding: 14, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 12, cursor: 'pointer', fontWeight: 'bold', fontSize: 16 },
+    toggle: { cursor: 'pointer', color: '#3b82f6', textAlign: 'center', fontSize: 14 }
+};
 
-        const hashedPassword = await require('bcryptjs').hash(password, 10);
-        user = new User({ email: email.toLowerCase(), password: hashedPassword, name });
-        
-        const otp = generateOTP();
-        user.otp = otp;
-        user.otpExpiry = Date.now() + 10 * 60 * 1000;
-        await user.save();
-        await sendOTP(email, otp);
-        res.status(201).json({ message: 'OTP sent to email' });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Verify OTP
-router.post('/verify-otp', async (req, res) => {
-    try {
-        const { email, otp } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user || user.otp !== otp || user.otpExpiry < Date.now()) {
-            return res.status(400).json({ error: 'Invalid or expired OTP' });
-        }
-        user.isVerified = true;
-        user.otp = undefined;
-        user.otpExpiry = undefined;
-        await user.save();
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.json({ token, userName: user.name });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Login
-router.post('/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user || !(await user.comparePassword(password))) {
-            return res.status(400).json({ error: 'Invalid credentials' });
-        }
-        if (!user.isVerified) {
-            const otp = generateOTP();
-            user.otp = otp;
-            user.otpExpiry = Date.now() + 10 * 60 * 1000;
-            await user.save();
-            await sendOTP(email, otp);
-            return res.status(403).json({ error: 'Unverified', needsOTP: true });
-        }
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.json({ token, userName: user.name });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Forgot Password
-router.post('/forgot-password', async (req, res) => {
-    try {
-        const user = await User.findOne({ email: req.body.email.toLowerCase() });
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        const otp = generateOTP();
-        user.otp = otp;
-        user.otpExpiry = Date.now() + 10 * 60 * 1000;
-        await user.save();
-        await sendOTP(user.email, otp);
-        res.json({ message: 'Recovery OTP sent' });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Reset Password
-router.post('/reset-password', async (req, res) => {
-    try {
-        const { email, otp, newPassword } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user || user.otp !== otp || user.otpExpiry < Date.now()) {
-            return res.status(400).json({ error: 'Invalid OTP' });
-        }
-        user.password = await require('bcryptjs').hash(newPassword, 10);
-        user.otp = undefined;
-        await user.save();
-        res.json({ message: 'Success' });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Delete Account (Recursive)
-router.delete('/delete-account', authenticate, async (req, res) => {
-    try {
-        const userId = req.user._id;
-        const files = await File.find({ owner: userId });
-        for (const file of files) {
-            try { await minioClient.removeObject(BUCKET_NAME, file.path); } catch(e){}
-        }
-        await File.deleteMany({ owner: userId });
-        await Folder.deleteMany({ owner: userId });
-        await User.findByIdAndDelete(userId);
-        res.json({ message: 'Deleted' });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Middleware
-async function authenticate(req, res, next) {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'No token' });
-    try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findById(decoded.id);
-        if (!user) return res.status(401).json({ error: 'User not found' });
-        req.user = user;
-        next();
-    } catch (err) { res.status(401).json({ error: 'Invalid token' }); }
-}
-
-module.exports = router;
+export default Auth;
