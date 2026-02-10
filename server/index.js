@@ -54,23 +54,22 @@ const minioClient = new Minio.Client({
 const ensureBucketExists = async () => {
     try {
         console.log(`Attempting to check/create bucket: '${BUCKET_NAME}' in region '${process.env.S3_REGION || 'us-east-1'}'`);
-        const exists = await minioClient.bucketExists(BUCKET_NAME); // <<< UNCOMMENTED AND CORRECTED
+        const exists = await minioClient.bucketExists(BUCKET_NAME);
         if (!exists) {
-            await minioClient.makeBucket(BUCKET_NAME, process.env.S3_REGION || 'us-east-1'); // <<< UNCOMMENTED AND CORRECTED
+            await minioClient.makeBucket(BUCKET_NAME, process.env.S3_REGION || 'us-east-1');
             console.log(`Bucket '${BUCKET_NAME}' created successfully.`);
-            // You might want to set a public policy here if files are meant to be publicly accessible
-            // For Supabase, RLS policies are typically managed in the Supabase dashboard directly.
         } else {
             console.log(`Bucket '${BUCKET_NAME}' already exists.`);
         }
     } catch (e) {
-        console.error(`Error ensuring bucket '${BUCKET_NAME}' exists:`, e.message);
-        // If bucket creation/check fails, it's often a critical issue.
-        // Re-throwing the error to prevent the server from starting in a broken state.
-        throw new Error(`S3 Bucket setup failed: ${e.message}`);
+        console.error(`S3 Error Details for bucket '${BUCKET_NAME}':`);
+        console.error(`  Error message: ${e.message}`);
+        console.error(`  Error code: ${e.code}`);
+        console.error(`  Error name: ${e.name}`);
+        console.error(`  Full error object:`, e); // This might reveal more properties
+        throw new Error(`S3 Bucket setup failed: ${e.message || e.code || 'Unknown S3 error'}`);
     }
 };
-
 // 2. Email Setup
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
