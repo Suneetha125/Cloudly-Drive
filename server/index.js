@@ -34,18 +34,23 @@ const minioClient = new Minio.Client({
 });
 
 // Create bucket if it doesn't exist (only once on startup or when needed)
-async function ensureBucketExists() {
+async function ensureBucketExists(bucketName) {
     try {
-        const exists = await minioClient.bucketExists(BUCKET_NAME);
+        const exists = await minioClient.bucketExists(bucketName);
         if (!exists) {
-            await minioClient.makeBucket(BUCKET_NAME, process.env.S3_REGION || 'us-east-1');
-            console.log(`Bucket '${BUCKET_NAME}' created successfully.`);
+            await minioClient.makeBucket(bucketName, process.env.S3_REGION);
+            console.log(`Bucket '${bucketName}' created successfully.`);
         } else {
-            console.log(`Bucket '${BUCKET_NAME}' already exists.`);
+            console.log(`Bucket '${bucketName}' already exists.`);
         }
-    } catch (e) {
-        console.error("Error ensuring bucket exists:", e.message);
-        // Depending on error, might need to exit or flag readiness issue
+    } catch (err) {
+        console.error(`--- BUCKET EXISTENCE CHECK ERROR ---`);
+        console.error(`Error ensuring bucket '${bucketName}' exists:`, err.message);
+        console.error("Error Code:", err.code);
+        console.error("Error Name:", err.name);
+        console.error("Stack Trace:", err.stack);
+        console.error("Full Error Object:", JSON.stringify(err, null, 2));
+        console.error(`--- END BUCKET EXISTENCE CHECK ERROR ---`);
     }
 }
 ensureBucketExists();
@@ -411,37 +416,29 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) =
 
 app.post('/api/upload/complete', authenticate, async (req, res) => {
     try {
-        const { fileName, uploadId, folderId, isVault } = req.body;
-        if (!fileName || !uploadId) return res.status(400).json({ error: "Missing fileName or uploadId." });
+        const name = `${req.body.uploadId}-${req.body.fileName}`;
+        const tPath = path.join('/tmp', name);
 
-        const tempFilePath = path.join('/tmp', `${uploadId}-${fileName}`);
-        if (!fs.existsSync(tempFilePath)) {
-            return res.status(400).json({ error: "Temporary file not found for completion." });
-        }
+        // This is the line that's probably throwing the S3Error:
+        await minioClient.fPutObject(BUCKET_NAME, name, tPath);
 
-        const fileStats = fs.statSync(tempFilePath);
-        const s3ObjectName = `${req.user.id}/${uploadId}-${fileName}`; // Unique S3 path per user
+        const file = new File({ fileName: req.body.fileName, fileSize: fs.statSync(tPath).size, path: name, parentFolder: req.body.folderId || null, owner: req.user.id, isVault: req.body.isVault === true });
+        await file.save();
+        await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: fs.statSync(tPath).size } });
+        fs.unlinkSync(tPath);
+        res.json(file);
+    } catch (err) {
+        console.error("--- UPLOAD COMPLETE ERROR DETAILS ---");
+        console.error("Error Message:", err.message);
+        console.error("Error Code:", err.code); // Minio S3 errors often have a code
+        console.error("Error Name:", err.name);
+        console.error("Stack Trace:", err.stack);
+        console.error("Minio S3 Error Object:", JSON.stringify(err, null, 2)); // Stringify the full error object
+        console.error("--- END UPLOAD COMPLETE ERROR DETAILS ---");
 
-        await minioClient.fPutObject(BUCKET_NAME, s3ObjectName, tempFilePath, {
-            'Content-Type': 'application/octet-stream' // Or detect content type
-        });
-
-        const file = new File({ 
-            fileName: fileName, 
-            fileSize: fileStats.size, 
-            path: s3ObjectName, 
-            parentFolder: folderId || null, 
-            owner: req.user.id, 
-            isVault: isVault || false 
-        });
-        await file.save(); 
-        await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: file.fileSize } });
-        
-        fs.unlinkSync(tempFilePath); // Clean up merged temporary file
-        res.status(201).json(file);
-    } catch (err) { 
-        console.error("Upload complete error:", err);
-        res.status(500).json({ error: "Upload failed: " + err.message }); 
+        // Send a more informative error message to the frontend if possible
+        const errorMessage = err.message || "Unknown upload error";
+        res.status(500).json({ error: `Upload failed: ${errorMessage}` });
     }
 });
 
