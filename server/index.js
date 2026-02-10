@@ -35,7 +35,7 @@ if (rawS3Endpoint.startsWith('https://')) {
 if (!s3Endpoint) {
     console.error('CRITICAL ERROR: S3_ENDPOINT environment variable is missing or malformed.');
     // You might want to exit the process here if S3 is mandatory for app startup
-    // process.exit(1);
+    process.exit(1);
 }
 console.log('  Parsed s3Endpoint:', s3Endpoint);
 
