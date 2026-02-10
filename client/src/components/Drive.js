@@ -561,12 +561,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { 
-  FolderPlus, Upload, Trash2, FileText, Search, LogOut, Folder, X, ChevronRight, Sun, Moon, 
-  MoreVertical, Share2, Users, Star, Shield, LayoutGrid, Eye, Move, UserX, Download 
+  FolderPlus, Upload, Trash2, FileText, Search, LogOut, Folder, ChevronRight, Sun, Moon, 
+  MoreVertical, Share2, Users, Star, Shield, LayoutGrid, Eye, Move, Download, Clock 
 } from 'lucide-react';
 
 const API = "https://cloudly-dj52.onrender.com/api"; 
 const CHUNK_SIZE = 5 * 1024 * 1024;
+const CONCURRENT_UPLOADS = 3; // Fast parallel uploading
 
 const Drive = () => {
     const [filesList, setFilesList] = useState([]);
@@ -576,7 +577,6 @@ const Drive = () => {
     const [pathHistory, setPathHistory] = useState([]);
     const [previewFile, setPreviewFile] = useState(null);
     const [activeMenu, setActiveMenu] = useState(null);
-    const [profileOpen, setProfileOpen] = useState(false);
     const [isDark, setIsDark] = useState(localStorage.getItem('theme') === 'dark');
     const [storage, setStorage] = useState({ used: 0, limit: 1 });
     const [showShareModal, setShowShareModal] = useState(false);
@@ -588,7 +588,6 @@ const Drive = () => {
 
     const navigate = useNavigate();
     const authConfig = useCallback(() => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }), []);
-    const userName = localStorage.getItem("userName") || "User";
 
     useEffect(() => {
         document.documentElement.classList.toggle('dark', isDark);
@@ -608,65 +607,67 @@ const Drive = () => {
         } catch (err) { if (err.response?.status === 401) navigate('/'); }
     }, [currentFolder, activeTab, authConfig, navigate, searchTerm, isVaultUnlocked]);
 
-    useEffect(() => { fetchData(); setActiveMenu(null); }, [fetchData]);
+    useEffect(() => { fetchData(); }, [fetchData]);
 
-    const handleUpload = async (event) => {
-        const selectedFiles = Array.from(event.target.files);
-        for (const file of selectedFiles) {
-            try {
-                setUploadProgress(p => ({ ...p, [file.name]: 0 }));
-                const init = await axios.post(`${API}/upload/initialize`, {}, authConfig());
-                const { uploadId } = init.data;
+    // PARALLEL UPLOAD LOGIC
+    const processUpload = async (file) => {
+        try {
+            setUploadProgress(p => ({ ...p, [file.name]: 0 }));
+            const init = await axios.post(`${API}/upload/initialize`, {}, authConfig());
+            const { uploadId } = init.data;
 
-                let uploaded = 0;
-                while (uploaded < file.size) {
-                    const chunk = file.slice(uploaded, uploaded + CHUNK_SIZE);
-                    const fd = new FormData();
-                    fd.append('chunk', chunk);
-                    fd.append('uploadId', uploadId);
-                    fd.append('fileName', file.name);
-                    await axios.post(`${API}/upload/chunk`, fd, authConfig());
-                    uploaded += chunk.size;
-                    setUploadProgress(p => ({ ...p, [file.name]: Math.round((uploaded / file.size) * 100) }));
-                }
-                await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault', mimeType: file.type }, authConfig());
-                fetchData();
-            } catch (err) { alert("Upload Failed"); }
+            let uploaded = 0;
+            while (uploaded < file.size) {
+                const chunk = file.slice(uploaded, uploaded + CHUNK_SIZE);
+                const fd = new FormData();
+                fd.append('chunk', chunk); fd.append('uploadId', uploadId); fd.append('fileName', file.name);
+                await axios.post(`${API}/upload/chunk`, fd, authConfig());
+                uploaded += chunk.size;
+                setUploadProgress(p => ({ ...p, [file.name]: Math.min(99, Math.round((uploaded / file.size) * 100)) }));
+            }
+            await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault', mimeType: file.type }, authConfig());
+            setUploadProgress(p => ({ ...p, [file.name]: 100 }));
+            fetchData();
+        } catch (e) { alert(`Upload failed: ${file.name}`); }
+    };
+
+    const handleUpload = async (e) => {
+        const files = Array.from(e.target.files);
+        // Process in batches for speed
+        for (let i = 0; i < files.length; i += CONCURRENT_UPLOADS) {
+            const batch = files.slice(i, i + CONCURRENT_UPLOADS);
+            await Promise.all(batch.map(file => processUpload(file)));
+        }
+    };
+
+    const handleMove = async (type, itemId) => {
+        const target = prompt("Move to? Options: 'root', 'vault', 'starred', or paste a Folder ID:");
+        if (target) {
+            await axios.patch(`${API}/drive/move`, { type, itemId, targetId: target }, authConfig());
+            fetchData();
         }
     };
 
     const handleDownload = async (file) => {
         const res = await axios.get(`${API}/drive/preview/${file._id}?download=true`, authConfig());
-        const link = document.createElement('a');
-        link.href = res.data.url;
-        link.setAttribute('download', file.fileName);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        window.open(res.data.url, '_blank');
     };
 
-    const handleStarToggle = async (type, item) => {
-        await axios.patch(`${API}/drive/star/${type}/${item._id}`, { isStarred: !item.isStarred }, authConfig());
-        fetchData();
-    };
-
-    const handleToggleVaultStatus = async (type, item) => {
-        await axios.patch(`${API}/drive/toggle-vault/${type}/${item._id}`, { isVault: !item.isVault }, authConfig());
-        fetchData();
-    };
-
-    const handleMove = async (type, itemId) => {
-        const targetId = prompt("Enter Target Folder ID (or 'root'):");
-        if (targetId) {
-            await axios.patch(`${API}/drive/move`, { type, itemId, targetId }, authConfig());
-            fetchData();
-        }
-    };
-
-    const handleDelete = async (type, id) => {
-        if (window.confirm("Delete this?")) {
-            await axios.delete(`${API}/drive/delete/${type}/${id}`, authConfig());
-            fetchData();
+    const handleVaultAction = async () => {
+        const pin = prompt("Enter Vault PIN:");
+        if (!pin) return;
+        try {
+            const res = await axios.post(`${API}/vault/unlock`, { pin }, authConfig());
+            if (res.data.setup) alert("Vault PIN Setup Successful!");
+            setIsVaultUnlocked(true); setActiveTab('vault');
+        } catch (e) {
+            if (window.confirm("Wrong PIN. Reset via Email?")) {
+                await axios.post(`${API}/vault/forgot-pin`, {}, authConfig());
+                const otp = prompt("Enter OTP from email:");
+                const newPin = prompt("Enter New PIN:");
+                await axios.post(`${API}/vault/reset-pin`, { otp, newPin }, authConfig());
+                alert("PIN Reset Successful!");
+            }
         }
     };
 
@@ -674,100 +675,72 @@ const Drive = () => {
         bg: isDark ? '#0f172a' : '#f8fafc', card: isDark ? '#1e293b' : '#ffffff', text: isDark ? '#f1f5f9' : '#1e293b', border: isDark ? '#334155' : '#e2e8f0', accent: '#3b82f6'
     };
 
-    const dynamicStyles = {
-        nav: { display:'flex', gap:15, padding:'12px 20px', borderRadius:10, cursor:'pointer', color: theme.text },
-        navAct: { display:'flex', gap:15, padding:'12px 20px', borderRadius:10, cursor:'pointer', background: isDark ? '#334155' : '#bfdbfe', color: theme.accent, fontWeight:'bold' },
-        btnBlue: { background:theme.accent, color:'#fff', padding:'10px 20px', borderRadius:'20px', cursor:'pointer', display:'flex', gap:8, border:'none', alignItems:'center' },
-        grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:20, marginTop:20 },
-        card: { padding:20, borderRadius:12, border:`1px solid ${theme.border}`, background: theme.card, position:'relative', cursor:'pointer', textAlign:'center' },
-        drop: { position:'absolute', top:40, right:10, background:theme.card, border:`1px solid ${theme.border}`, zIndex:100, borderRadius:8, padding:10, width:150, textAlign:'left', fontSize:13, display:'flex', flexDirection:'column', gap:8 }
-    };
-
     return (
-        <div style={{ minHeight: '100vh', backgroundColor: theme.bg, color: theme.text, display: 'flex' }} onClick={() => {setActiveMenu(null); setProfileOpen(false)}}>
-            <aside style={{ width: 260, borderRight: `1px solid ${theme.border}`, padding: '20px', display: 'flex', flexDirection: 'column', gap: 5, background: theme.card }}>
-                <h1 style={{fontSize:24, fontWeight:'bold', marginBottom:20}}>Cloudly</h1>
-                <div style={activeTab === 'files' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('files'); setCurrentFolder(null);}}><LayoutGrid size={20}/> My Drive</div>
-                <div style={activeTab === 'shared' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => setActiveTab('shared')}><Users size={20}/> Shared</div>
-                <div style={activeTab === 'starred' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
-                <div style={activeTab === 'vault' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={async (e)=>{
-                    e.stopPropagation();
-                    const p = prompt("Vault PIN:");
-                    if(p) {
-                        try {
-                            await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig());
-                            setIsVaultUnlocked(true); setActiveTab('vault'); setCurrentFolder(null);
-                        } catch(e) { alert("Wrong PIN"); }
-                    }
-                }}><Shield size={20}/> Vault</div>
-                <div style={{marginTop:'auto', padding:'10px', borderTop:`1px solid ${theme.border}`}}>
-                    <p style={{fontSize:12}}>Storage: {(storage.used/1e9).toFixed(2)}GB / 30GB</p>
-                    <div style={{height:6, background:theme.border, borderRadius:5, marginTop:5, overflow:'hidden'}}>
+        <div style={{ minHeight: '100vh', backgroundColor: theme.bg, color: theme.text, display: 'flex' }} onClick={() => setActiveMenu(null)}>
+            {/* SIDEBAR */}
+            <aside style={{ width: 260, borderRight: `1px solid ${theme.border}`, padding: 20, background: theme.card, display:'flex', flexDirection:'column', gap:10 }}>
+                <h1 style={{fontSize:22, fontWeight:'bold', marginBottom:20}}>Cloudly</h1>
+                <div style={{display:'flex', gap:12, padding:12, cursor:'pointer', borderRadius:8, background: activeTab === 'files' ? theme.accent : 'transparent', color: activeTab === 'files' ? '#fff' : theme.text}} onClick={() => {setActiveTab('files'); setCurrentFolder(null); setIsVaultUnlocked(false)}}><LayoutGrid size={20}/> My Drive</div>
+                <div style={{display:'flex', gap:12, padding:12, cursor:'pointer', borderRadius:8, background: activeTab === 'shared' ? theme.accent : 'transparent', color: activeTab === 'shared' ? '#fff' : theme.text}} onClick={() => setActiveTab('shared')}><Users size={20}/> Shared</div>
+                <div style={{display:'flex', gap:12, padding:12, cursor:'pointer', borderRadius:8, background: activeTab === 'starred' ? theme.accent : 'transparent', color: activeTab === 'starred' ? '#fff' : theme.text}} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
+                <div style={{display:'flex', gap:12, padding:12, cursor:'pointer', borderRadius:8, background: activeTab === 'vault' ? theme.accent : 'transparent', color: activeTab === 'vault' ? '#fff' : theme.text}} onClick={handleVaultAction}><Shield size={20}/> Vault</div>
+                
+                <div style={{marginTop:'auto', paddingTop:20, borderTop:`1px solid ${theme.border}`}}>
+                    <p style={{fontSize:12}}>Storage: {(storage.used/1e9).toFixed(2)} / 30GB</p>
+                    <div style={{height:6, background:theme.border, borderRadius:10, marginTop:5, overflow:'hidden'}}>
                         <div style={{width:`${(storage.used/storage.limit)*100}%`, height:'100%', background:theme.accent}}></div>
                     </div>
                 </div>
             </aside>
 
+            {/* MAIN CONTENT */}
             <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <header style={{ height: 70, padding: '0 30px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${theme.border}` }}>
-                    <div style={{ background: theme.bg, width: 400, padding: '8px 15px', borderRadius: 8, display:'flex', alignItems:'center', border:`1px solid ${theme.border}` }}>
-                        <Search size={18}/><input placeholder="Search..." style={{border:'none', background:'transparent', marginLeft:10, width:'100%', color:theme.text, outline:'none'}} value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}/>
+                    <div style={{ background: theme.card, width: 400, padding: '10px 15px', borderRadius: 10, display:'flex', alignItems:'center', border:`1px solid ${theme.border}` }}>
+                        <Search size={18}/><input placeholder="Search files/folders..." style={{border:'none', background:'transparent', marginLeft:10, width:'100%', color:theme.text, outline:'none'}} onChange={e=>setSearchTerm(e.target.value)}/>
                     </div>
-                    <div style={{display:'flex', gap:15, alignItems:'center'}}>
-                        <button onClick={()=>setIsDark(!isDark)} style={{background:'none', border:'none', cursor:'pointer', color:theme.text}}>{isDark ? <Sun/> : <Moon/>}</button>
-                        <div style={{width:35, height:35, borderRadius:'50%', background:theme.accent, color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer'}} onClick={(e)=>{e.stopPropagation(); setProfileOpen(!profileOpen)}}>{userName[0]}</div>
-                        {profileOpen && (
-                            <div style={{position:'absolute', top:60, right:30, background:theme.card, border:`1px solid ${theme.border}`, padding:15, borderRadius:8, zIndex:200}}>
-                                <button onClick={()=>{localStorage.clear(); navigate('/')}} style={{display:'flex', gap:8, background:'none', border:'none', color:theme.text, cursor:'pointer'}}><LogOut size={18}/> Logout</button>
-                            </div>
-                        )}
-                    </div>
+                    <button onClick={()=>setIsDark(!isDark)} style={{background:'none', border:'none', cursor:'pointer', color:theme.text}}>{isDark ? <Sun/> : <Moon/>}</button>
                 </header>
 
-                <div style={{ padding: 30, overflowY: 'auto', flex: 1 }}>
-                    <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:20}}>
-                        <span style={{cursor:'pointer'}} onClick={()=>{setCurrentFolder(null); setPathHistory([])}}>My Drive</span>
-                        {pathHistory.map((h, i)=>(<React.Fragment key={i}><ChevronRight size={16}/> <span style={{cursor:'pointer'}} onClick={()=>{setCurrentFolder(h); setPathHistory(pathHistory.slice(0, i))}}>{h.name}</span></React.Fragment>))}
-                        {currentFolder && <><ChevronRight size={16}/> <span>{currentFolder.name}</span></>}
-                        
+                <div style={{ padding: 30, flex:1, overflowY:'auto' }}>
+                    <div style={{display:'flex', gap:10, marginBottom:20, alignItems:'center'}}>
+                        <span onClick={()=>setCurrentFolder(null)} style={{cursor:'pointer'}}>Drive</span>
+                        {pathHistory.map((h, i) => (<span key={i}><ChevronRight size={16}/> {h.name}</span>))}
                         <div style={{marginLeft:'auto', display:'flex', gap:10}}>
-                            <label style={dynamicStyles.btnBlue}><Upload size={18}/> File<input type="file" hidden multiple onChange={handleUpload}/></label>
-                            <label style={dynamicStyles.btnBlue}><FolderPlus size={18}/> Folder<input type="file" hidden webkitdirectory="true" onChange={handleUpload}/></label>
-                            <button style={{...dynamicStyles.btnBlue, background:theme.card, color:theme.accent, border:`1px solid ${theme.accent}`}} onClick={async ()=>{const n=prompt("Folder Name:"); n && await axios.post(`${API}/folders`, {name:n, parentFolder:currentFolder?._id, isVault:activeTab==='vault'}, authConfig()); fetchData();}}><FolderPlus size={18}/></button>
+                            <label style={{background:theme.accent, color:'#fff', padding:'8px 16px', borderRadius:20, cursor:'pointer', display:'flex', gap:8}}><Upload size={18}/> Files<input type="file" hidden multiple onChange={handleUpload}/></label>
+                            <label style={{background:theme.card, color:theme.text, border:`1px solid ${theme.border}`, padding:'8px 16px', borderRadius:20, cursor:'pointer', display:'flex', gap:8}}><FolderPlus size={18}/> Folder<input type="file" hidden webkitdirectory="true" onChange={handleUpload}/></label>
                         </div>
                     </div>
 
-                    <div style={dynamicStyles.grid}>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px, 1fr))', gap:20 }}>
                         {foldersList.map(f => (
-                            <div key={f._id} style={dynamicStyles.card} onDoubleClick={()=>{setPathHistory([...pathHistory, currentFolder].filter(Boolean)); setCurrentFolder(f)}}>
-                                <Folder size={50} color="#fbbf24" fill="#fbbf24" style={{margin:'0 auto'}}/>
-                                <p style={{marginTop:10, fontWeight:'bold'}}>{f.name}</p>
-                                <MoreVertical style={{position:'absolute', top:10, right:10}} onClick={(e)=>{e.stopPropagation(); setActiveMenu(`f-${f._id}`)}}/>
+                            <div key={f._id} style={{padding:20, background:theme.card, borderRadius:12, border:`1px solid ${theme.border}`, textAlign:'center', position:'relative'}} onDoubleClick={()=>{setPathHistory([...pathHistory, f]); setCurrentFolder(f)}}>
+                                <Folder size={40} color="#fbbf24" fill="#fbbf24" style={{margin:'0 auto'}}/>
+                                <p style={{marginTop:10, fontWeight:'500'}}>{f.name}</p>
+                                <MoreVertical style={{position:'absolute', top:10, right:10, cursor:'pointer'}} onClick={(e)=>{e.stopPropagation(); setActiveMenu(`f-${f._id}`)}}/>
                                 {activeMenu === `f-${f._id}` && (
-                                    <div style={dynamicStyles.drop} onClick={e=>e.stopPropagation()}>
-                                        <div onClick={()=>handleStarToggle('folder', f)}><Star size={14}/> {f.isStarred ? "Unstar" : "Star"}</div>
-                                        <div onClick={()=>handleToggleVaultStatus('folder', f)}><Shield size={14}/> {f.isVault ? "Move to Drive" : "Move to Vault"}</div>
+                                    <div style={{position:'absolute', top:35, right:10, background:theme.card, border:`1px solid ${theme.border}`, zIndex:10, borderRadius:8, width:140, textAlign:'left', padding:8, display:'flex', flexDirection:'column', gap:8}}>
                                         <div onClick={()=>handleMove('folder', f._id)}><Move size={14}/> Move</div>
-                                        <div onClick={()=>handleDelete('folder', f._id)} style={{color:'red'}}><Trash2 size={14}/> Delete</div>
+                                        <div onClick={()=>{setItemToShare(f); setShowShareModal(true)}}><Share2 size={14}/> Share</div>
+                                        <div onClick={async ()=>{await axios.patch(`${API}/drive/star/folder/${f._id}`, {isStarred: !f.isStarred}, authConfig()); fetchData();}}><Star size={14}/> Star</div>
+                                        <div onClick={async ()=>{if(window.confirm("Delete folder?")) {await axios.delete(`${API}/drive/delete/folder/${f._id}`, authConfig()); fetchData();}}} style={{color:'red'}}><Trash2 size={14}/> Delete</div>
                                     </div>
                                 )}
                             </div>
                         ))}
                         {filesList.map(f => (
-                            <div key={f._id} style={dynamicStyles.card}>
-                                <FileText size={50} color={theme.accent} style={{margin:'0 auto'}}/>
-                                <p style={{marginTop:10, fontSize:12}}>{f.fileName}</p>
-                                {uploadProgress[f.fileName] < 100 && <div style={{height:4, background:theme.border, marginTop:5}}><div style={{width:`${uploadProgress[f.fileName]}%`, background:theme.accent, height:'100%'}}></div></div>}
-                                <MoreVertical style={{position:'absolute', top:10, right:10}} onClick={(e)=>{e.stopPropagation(); setActiveMenu(`fi-${f._id}`)}}/>
+                            <div key={f._id} style={{padding:20, background:theme.card, borderRadius:12, border:`1px solid ${theme.border}`, textAlign:'center', position:'relative'}}>
+                                <FileText size={40} color={theme.accent} style={{margin:'0 auto'}}/>
+                                <p style={{marginTop:10, fontSize:13}}>{f.fileName}</p>
+                                {uploadProgress[f.fileName] < 100 && <div style={{height:3, background:theme.border, marginTop:5}}><div style={{width:`${uploadProgress[f.fileName]}%`, background:theme.accent, height:'100%'}}></div></div>}
+                                <MoreVertical style={{position:'absolute', top:10, right:10, cursor:'pointer'}} onClick={(e)=>{e.stopPropagation(); setActiveMenu(`fi-${f._id}`)}}/>
                                 {activeMenu === `fi-${f._id}` && (
-                                    <div style={dynamicStyles.drop} onClick={e=>e.stopPropagation()}>
+                                    <div style={{position:'absolute', top:35, right:10, background:theme.card, border:`1px solid ${theme.border}`, zIndex:10, borderRadius:8, width:140, textAlign:'left', padding:8, display:'flex', flexDirection:'column', gap:8}}>
                                         <div onClick={async ()=>{const r=await axios.get(`${API}/drive/preview/${f._id}`, authConfig()); setPreviewFile(r.data.url)}}><Eye size={14}/> Preview</div>
                                         <div onClick={()=>handleDownload(f)}><Download size={14}/> Download</div>
-                                        <div onClick={()=>handleStarToggle('file', f)}><Star size={14}/> {f.isStarred ? "Unstar" : "Star"}</div>
-                                        <div onClick={()=>handleToggleVaultStatus('file', f)}><Shield size={14}/> {f.isVault ? "Move to Drive" : "Move to Vault"}</div>
-                                        <div onClick={()=>{setItemToShare(f); setShowShareModal(true)}}><Share2 size={14}/> Share</div>
                                         <div onClick={()=>handleMove('file', f._id)}><Move size={14}/> Move</div>
-                                        <div onClick={()=>handleDelete('file', f._id)} style={{color:'red'}}><Trash2 size={14}/> Delete</div>
+                                        <div onClick={()=>{setItemToShare(f); setShowShareModal(true)}}><Share2 size={14}/> Share</div>
+                                        <div onClick={async ()=>{if(window.confirm("Delete file?")) {await axios.delete(`${API}/drive/delete/file/${f._id}`, authConfig()); fetchData();}}} style={{color:'red'}}><Trash2 size={14}/> Delete</div>
                                     </div>
                                 )}
                             </div>
@@ -776,17 +749,29 @@ const Drive = () => {
                 </div>
             </main>
 
-            {previewFile && <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.8)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000}} onClick={()=>setPreviewFile(null)}>
-                <div style={{width:'80%', height:'80%', background:'#fff', borderRadius:10, overflow:'hidden'}} onClick={e=>e.stopPropagation()}><embed src={previewFile} width="100%" height="100%"/></div>
+            {/* PREVIEW MODAL */}
+            {previewFile && <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.8)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={()=>setPreviewFile(null)}>
+                <div style={{width:'80%', height:'80%', background:'#fff', borderRadius:12, overflow:'hidden'}} onClick={e=>e.stopPropagation()}><embed src={previewFile} width="100%" height="100%"/></div>
             </div>}
 
-            {showShareModal && <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000}}>
-                <div style={{background:theme.card, padding:30, borderRadius:12, width:350}}>
-                    <h3>Share {itemToShare.fileName}</h3>
-                    <input placeholder="Email" style={{width:'100%', padding:10, margin:'10px 0', borderRadius:5, border:`1px solid ${theme.border}`, background:theme.bg, color:theme.text}} onChange={e=>setShareForm({...shareForm, email:e.target.value})}/>
-                    <div style={{display:'flex', justifyContent:'flex-end', gap:10, marginTop:10}}>
-                        <button onClick={()=>setShowShareModal(false)} style={{background:'none', border:'none', color:theme.text}}>Cancel</button>
-                        <button onClick={async ()=>{await axios.post(`${API}/files/share`, {fileId:itemToShare._id, ...shareForm}, authConfig()); setShowShareModal(false);}} style={dynamicStyles.btnBlue}>Share</button>
+            {/* MANAGE ACCESS MODAL */}
+            {showShareModal && <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center'}}>
+                <div style={{background:theme.card, padding:30, borderRadius:15, width:380}} onClick={e=>e.stopPropagation()}>
+                    <h2 style={{marginBottom:20}}>Manage Access</h2>
+                    <input placeholder="User Email" style={{width:'100%', padding:12, borderRadius:8, border:`1px solid ${theme.border}`, background:theme.bg, color:theme.text, marginBottom:15}} onChange={e=>setShareForm({...shareForm, email:e.target.value})}/>
+                    <select style={{width:'100%', padding:12, borderRadius:8, border:`1px solid ${theme.border}`, background:theme.bg, color:theme.text, marginBottom:15}} onChange={e=>setShareForm({...shareForm, role:e.target.value})}>
+                        <option value="viewer">Viewer</option>
+                        <option value="editor">Editor</option>
+                    </select>
+                    <select style={{width:'100%', padding:12, borderRadius:8, border:`1px solid ${theme.border}`, background:theme.bg, color:theme.text, marginBottom:15}} onChange={e=>setShareForm({...shareForm, hours: parseInt(e.target.value)})}>
+                        <option value="0">Unlimited Access</option>
+                        <option value="1">1 Hour</option>
+                        <option value="24">24 Hours</option>
+                        <option value="168">1 Week</option>
+                    </select>
+                    <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+                        <button onClick={()=>setShowShareModal(false)} style={{padding:'10px 20px', background:'none', color:theme.text, border:'none'}}>Cancel</button>
+                        <button onClick={async ()=>{await axios.post(`${API}/files/share`, {fileId:itemToShare._id, type: itemToShare.fileName ? 'file':'folder', ...shareForm}, authConfig()); setShowShareModal(false);}} style={{padding:'10px 20px', background:theme.accent, color:'#fff', border:'none', borderRadius:8}}>Give Access</button>
                     </div>
                 </div>
             </div>}

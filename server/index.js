@@ -314,229 +314,203 @@ const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const SECRET = process.env.JWT_SECRET || "CLOUDLY_FINAL_BOSS_2026";
+const SECRET = process.env.JWT_SECRET || "CLOUDLY_FINAL_2026";
 const BUCKET_NAME = 'cloudly';
 
-// --- Supabase Setup ---
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.S3_SECRET_KEY,
-    { auth: { persistSession: false } }
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.S3_SECRET_KEY);
 
-// --- Email Setup ---
 const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    host: 'smtp.gmail.com', port: 465, secure: true,
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
 });
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// --- Database Connection ---
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => {
-      console.log("Connected to MongoDB & Supabase Storage ready.");
-      const PORT = process.env.PORT || 5000;
-      app.listen(PORT, () => console.log(`Server Running on port ${PORT}`));
-  })
-  .catch(err => { console.error("Database Error:", err); process.exit(1); });
+mongoose.connect(process.env.MONGO_URI).then(() => {
+    app.listen(process.env.PORT || 5000, () => console.log("Server Running"));
+});
 
-// --- Mongoose Models ---
+// --- MODELS ---
 const User = mongoose.model('User', {
-    name: String,
-    email: { type: String, unique: true, required: true },
-    password: { type: String, required: true },
-    vaultPIN: String,
-    storageUsed: { type: Number, default: 0 },
-    storageLimit: { type: Number, default: 32212254720 } // 30 GB
+    name: String, email: { type: String, unique: true }, password: { type: String },
+    vaultPIN: String, otp: String, otpExpires: Date,
+    storageUsed: { type: Number, default: 0 }, storageLimit: { type: Number, default: 32212254720 } 
 });
 
 const Folder = mongoose.model('Folder', {
-    name: String,
-    parentFolder: { type: mongoose.Schema.Types.ObjectId, ref: 'Folder', default: null },
-    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    isStarred: { type: Boolean, default: false },
-    isVault: { type: Boolean, default: false },
-    sharedWith: [{ email: String, role: String }]
-});
-
-const File = mongoose.model('File', {
-    fileName: String,
-    fileSize: Number,
-    s3Path: String,
-    mimeType: String,
-    parentFolder: { type: mongoose.Schema.Types.ObjectId, ref: 'Folder', default: null },
-    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    isStarred: { type: Boolean, default: false },
-    isVault: { type: Boolean, default: false },
+    name: String, parentFolder: { type: mongoose.Schema.Types.ObjectId, ref: 'Folder', default: null },
+    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    isStarred: { type: Boolean, default: false }, isVault: { type: Boolean, default: false },
     sharedWith: [{ email: String, role: String, expiresAt: Date }]
 });
 
-// --- Middleware ---
+const File = mongoose.model('File', {
+    fileName: String, fileSize: Number, s3Path: String, mimeType: String,
+    parentFolder: { type: mongoose.Schema.Types.ObjectId, ref: 'Folder', default: null },
+    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    isStarred: { type: Boolean, default: false }, isVault: { type: Boolean, default: false },
+    sharedWith: [{ email: String, role: String, expiresAt: Date }]
+});
+
 const authenticate = (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "No token" });
-    const token = authHeader.split(" ")[1];
     try {
+        const token = req.headers.authorization.split(" ")[1];
         req.user = jwt.verify(token, SECRET);
         next();
-    } catch (err) { res.status(401).json({ error: "Invalid token" }); }
+    } catch (e) { res.status(401).json({ error: "Unauthorized" }); }
 };
 
-// --- Auth Routes ---
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ name, email: email.toLowerCase(), password: hashedPassword });
-        await user.save();
-        res.status(201).json({ success: true });
-    } catch (e) { res.status(400).json({ error: "User already exists" }); }
-});
+// --- ROUTES ---
 
-app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user || !(await bcrypt.compare(password, user.password))) return res.status(400).json({ error: "Invalid credentials" });
-    const token = jwt.sign({ id: user._id, email: user.email }, SECRET, { expiresIn: '7d' });
-    res.json({ token, userName: user.name, userId: user._id });
-});
-
-// --- Drive Logic (Contents & Search) ---
 app.get('/api/drive/contents', authenticate, async (req, res) => {
-    try {
-        const { folderId, tab, search, vaultUnlocked } = req.query;
-        let query = { owner: req.user.id };
+    const { folderId, tab, search, vaultUnlocked } = req.query;
+    let query = { owner: req.user.id };
 
-        if (tab === 'shared') {
-            query = { "sharedWith.email": req.user.email };
-        } else if (tab === 'starred') {
-            query.isStarred = true;
-        } else if (tab === 'vault') {
-            if (vaultUnlocked !== 'true') return res.status(403).json({ error: "Vault Locked" });
-            query.isVault = true;
-        } else {
-            query.isVault = false;
-            query.parentFolder = folderId === "null" ? null : folderId;
-        }
+    if (tab === 'shared') {
+        query = { "sharedWith.email": req.user.email };
+    } else if (tab === 'starred') {
+        query.isStarred = true;
+    } else if (tab === 'vault') {
+        if (vaultUnlocked !== 'true') return res.status(403).json({ error: "Vault Locked" });
+        query.isVault = true;
+    } else {
+        query.isVault = false;
+        query.parentFolder = folderId === "null" ? null : folderId;
+    }
 
-        if (search) {
-            const regex = { $regex: search, $options: 'i' };
-            const folders = await Folder.find({ ...query, name: regex });
-            const files = await File.find({ ...query, fileName: regex });
-            return res.json({ folders, files });
-        }
+    if (search) {
+        const regex = { $regex: search, $options: 'i' };
+        const folders = await Folder.find({ ...query, name: regex });
+        const files = await File.find({ ...query, fileName: regex });
+        return res.json({ folders, files });
+    }
 
-        const [folders, files] = await Promise.all([Folder.find(query), File.find(query)]);
-        res.json({ folders, files });
-    } catch (e) { res.status(500).json({ error: "Fetch error" }); }
+    const [folders, files] = await Promise.all([Folder.find(query), File.find(query)]);
+    res.json({ folders, files });
 });
 
-// --- Action Routes (Star, Move, Vault, Share) ---
-app.patch('/api/drive/star/:type/:id', authenticate, async (req, res) => {
-    const Model = req.params.type === 'file' ? File : Folder;
-    const item = await Model.findOneAndUpdate({ _id: req.params.id, owner: req.user.id }, { isStarred: req.body.isStarred }, { new: true });
-    res.json(item);
-});
-
-app.patch('/api/drive/toggle-vault/:type/:id', authenticate, async (req, res) => {
-    const Model = req.params.type === 'file' ? File : Folder;
-    const item = await Model.findOneAndUpdate({ _id: req.params.id, owner: req.user.id }, { isVault: req.body.isVault, parentFolder: null }, { new: true });
-    res.json(item);
-});
-
+// MOVE LOGIC (Sidebar to Sidebar, Folder to Folder)
 app.patch('/api/drive/move', authenticate, async (req, res) => {
-    const Model = req.body.type === 'file' ? File : Folder;
-    await Model.updateOne({ _id: req.body.itemId, owner: req.user.id }, { parentFolder: req.body.targetId === 'root' ? null : req.body.targetId });
+    const { type, itemId, targetId } = req.body; // targetId can be 'root', 'vault', 'starred', or a FolderID
+    const Model = type === 'file' ? File : Folder;
+    let update = {};
+
+    if (targetId === 'vault') update = { isVault: true, isStarred: false, parentFolder: null };
+    else if (targetId === 'starred') update = { isStarred: true };
+    else if (targetId === 'root') update = { isVault: false, parentFolder: null };
+    else update = { parentFolder: targetId, isVault: false };
+
+    await Model.updateOne({ _id: itemId, owner: req.user.id }, update);
     res.json({ success: true });
 });
 
+// SHARE / MANAGE ACCESS
 app.post('/api/files/share', authenticate, async (req, res) => {
-    const { fileId, email, role, hours } = req.body;
-    const expiry = hours > 0 ? new Date(Date.now() + hours * 3600000) : null;
-    await File.updateOne({ _id: fileId, owner: req.user.id }, { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt: expiry } } });
+    const { fileId, type, email, role, hours } = req.body;
+    const Model = type === 'file' ? File : Folder;
+    const expiresAt = hours > 0 ? new Date(Date.now() + hours * 3600000) : null;
+    
+    await Model.updateOne(
+        { _id: fileId, owner: req.user.id },
+        { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt } } }
+    );
     res.json({ success: true });
 });
 
-// --- Upload Logic (Chunked) ---
+// VAULT PIN & RESET
+app.post('/api/vault/unlock', authenticate, async (req, res) => {
+    const user = await User.findById(req.user.id);
+    if (!user.vaultPIN) {
+        user.vaultPIN = await bcrypt.hash(req.body.pin, 10);
+        await user.save();
+        return res.json({ setup: true });
+    }
+    const match = await bcrypt.compare(req.body.pin, user.vaultPIN);
+    if (match) res.json({ success: true });
+    else res.status(403).json({ error: "Wrong PIN" });
+});
+
+app.post('/api/vault/forgot-pin', authenticate, async (req, res) => {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await User.findByIdAndUpdate(req.user.id, { otp, otpExpires: Date.now() + 600000 });
+    await transporter.sendMail({
+        to: req.user.email,
+        subject: "Vault Reset OTP",
+        text: `Your OTP to reset Vault PIN is ${otp}`
+    });
+    res.json({ success: true });
+});
+
+app.post('/api/vault/reset-pin', authenticate, async (req, res) => {
+    const { otp, newPin } = req.body;
+    const user = await User.findOne({ _id: req.user.id, otp, otpExpires: { $gt: Date.now() } });
+    if (!user) return res.status(400).json({ error: "Invalid OTP" });
+    user.vaultPIN = await bcrypt.hash(newPin, 10);
+    user.otp = undefined;
+    await user.save();
+    res.json({ success: true });
+});
+
+// UPLOAD & DOWNLOAD
 const upload = multer({ dest: '/tmp/' });
 app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
-
 app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
-    const tempPath = path.join('/tmp', `${req.body.uploadId}-${req.body.fileName}`);
-    fs.appendFileSync(tempPath, fs.readFileSync(req.file.path));
+    const temp = path.join('/tmp', `${req.body.uploadId}-${req.body.fileName}`);
+    fs.appendFileSync(temp, fs.readFileSync(req.file.path));
     fs.unlinkSync(req.file.path);
-    res.json({ success: true });
+    res.sendStatus(200);
 });
-
 app.post('/api/upload/complete', authenticate, async (req, res) => {
     const { fileName, uploadId, folderId, isVault, mimeType } = req.body;
-    const tempPath = path.join('/tmp', `${uploadId}-${fileName}`);
-    try {
-        const stats = fs.statSync(tempPath);
-        const s3Path = `${req.user.id}/${Date.now()}-${fileName}`;
-        const { error } = await supabase.storage.from(BUCKET_NAME).upload(s3Path, fs.readFileSync(tempPath), { contentType: mimeType });
-        if (error) throw error;
-
-        const file = new File({ fileName, fileSize: stats.size, s3Path, mimeType, parentFolder: folderId || null, owner: req.user.id, isVault });
-        await file.save();
-        await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: stats.size } });
-        fs.unlinkSync(tempPath);
-        res.status(201).json(file);
-    } catch (e) { res.status(500).json({ error: "Upload failed" }); }
+    const temp = path.join('/tmp', `${uploadId}-${fileName}`);
+    const stats = fs.statSync(temp);
+    const s3Path = `${req.user.id}/${Date.now()}-${fileName}`;
+    
+    await supabase.storage.from(BUCKET_NAME).upload(s3Path, fs.readFileSync(temp), { contentType: mimeType });
+    const file = new File({ fileName, fileSize: stats.size, s3Path, mimeType, parentFolder: folderId || null, owner: req.user.id, isVault });
+    await file.save();
+    await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: stats.size } });
+    fs.unlinkSync(temp);
+    res.json(file);
 });
 
-// --- Download & Preview ---
 app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
     const file = await File.findById(req.params.id);
-    const forceDownload = req.query.download === 'true';
-    const { data, error } = await supabase.storage.from(BUCKET_NAME).createSignedUrl(file.s3Path, 3600, {
-        download: forceDownload ? file.fileName : false
+    const { data } = await supabase.storage.from(BUCKET_NAME).createSignedUrl(file.s3Path, 3600, {
+        download: req.query.download === 'true' ? file.fileName : false
     });
-    if (error) return res.status(500).json({ error: "URL error" });
     res.json({ url: data.signedUrl });
 });
 
-// --- Folders & Delete ---
-app.post('/api/folders', authenticate, async (req, res) => {
-    const folder = new Folder({ ...req.body, owner: req.user.id });
-    await folder.save();
-    res.json(folder);
-});
-
 app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
-    const Model = req.params.type === 'file' ? File : Folder;
     if (req.params.type === 'file') {
-        const file = await File.findOne({ _id: req.params.id, owner: req.user.id });
+        const file = await File.findById(req.params.id);
         await supabase.storage.from(BUCKET_NAME).remove([file.s3Path]);
         await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: -file.fileSize } });
+        await File.deleteOne({ _id: req.params.id });
+    } else {
+        await Folder.deleteOne({ _id: req.params.id });
     }
-    await Model.deleteOne({ _id: req.params.id, owner: req.user.id });
     res.json({ success: true });
 });
 
-// --- Vault & Storage ---
 app.get('/api/drive/storage', authenticate, async (req, res) => {
     const user = await User.findById(req.user.id);
     res.json({ used: user.storageUsed, limit: user.storageLimit });
 });
 
-app.post('/api/vault/unlock', authenticate, async (req, res) => {
-    const { pin } = req.body;
-    const user = await User.findById(req.user.id);
-    if (!user.vaultPIN) {
-        user.vaultPIN = await bcrypt.hash(pin, 10);
-        await user.save();
-        return res.json({ success: true });
-    }
-    if (await bcrypt.compare(pin, user.vaultPIN)) res.json({ success: true });
-    else res.status(403).json({ error: "Incorrect PIN" });
-});
-
-app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
-    await User.findByIdAndDelete(req.user.id);
+// AUTH LOGIC
+app.post('/api/auth/register', async (req, res) => {
+    const hash = await bcrypt.hash(req.body.password, 10);
+    const user = new User({ ...req.body, password: hash });
+    await user.save();
     res.json({ success: true });
+});
+app.post('/api/auth/login', async (req, res) => {
+    const user = await User.findOne({ email: req.body.email });
+    if (user && await bcrypt.compare(req.body.password, user.password)) {
+        const token = jwt.sign({ id: user._id, email: user.email }, SECRET);
+        res.json({ token, userName: user.name });
+    } else res.status(401).json({ error: "Failed" });
 });
