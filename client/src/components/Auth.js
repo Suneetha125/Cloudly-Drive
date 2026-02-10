@@ -6,7 +6,7 @@ import { HardDrive, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 const API = "https://cloudly-dj52.onrender.com/api";
 
 const Auth = () => {
-    const [mode, setMode] = useState('login'); // login, signup, forgot, reset
+    const [mode, setMode] = useState('login'); // login, signup, forgot, verify, reset
     const [showPassword, setShowPassword] = useState(false);
     const [form, setForm] = useState({ name: '', email: '', password: '', otp: '' });
     const navigate = useNavigate();
@@ -16,15 +16,19 @@ const Auth = () => {
         try {
             if (mode === 'signup') {
                 await axios.post(`${API}/auth/register`, form);
-                alert("Account Created! You can now login.");
+                alert("OTP Sent to your email!");
+                setMode('verify');
+            } else if (mode === 'verify') {
+                await axios.post(`${API}/auth/verify`, { email: form.email, otp: form.otp });
+                alert("Verified! Please Login.");
                 setMode('login');
             } else if (mode === 'forgot') {
                 await axios.post(`${API}/auth/forgot-password`, { email: form.email });
-                alert("Recovery OTP sent to your email!");
+                alert("OTP Sent!");
                 setMode('reset');
             } else if (mode === 'reset') {
                 await axios.post(`${API}/auth/reset-password`, { email: form.email, otp: form.otp, newPassword: form.password });
-                alert("Password Updated! Please login.");
+                alert("Password Updated!");
                 setMode('login');
             } else {
                 const res = await axios.post(`${API}/auth/login`, form);
@@ -32,7 +36,7 @@ const Auth = () => {
                 localStorage.setItem("userName", res.data.userName);
                 navigate("/drive");
             }
-        } catch (err) { alert(err.response?.data?.error || "Action failed."); }
+        } catch (err) { alert(err.response?.data?.error || "Error"); }
     };
 
     return (
@@ -40,24 +44,21 @@ const Auth = () => {
             <div style={styles.card}>
                 <div style={{textAlign:'center', marginBottom:30}}>
                     <HardDrive size={50} color="#3b82f6" />
-                    <h2>{mode === 'login' ? 'Login' : mode === 'signup' ? 'Sign Up' : mode === 'forgot' ? 'Recover' : 'Reset'}</h2>
+                    <h2>{mode === 'login' ? 'Login' : mode === 'signup' ? 'Sign Up' : 'Verify'}</h2>
                 </div>
                 <form onSubmit={handleSubmit} style={{display:'flex', flexDirection:'column', gap:15}}>
                     {mode === 'signup' && <div style={styles.inputGroup}><User size={18}/><input style={styles.inputNo} placeholder="Name" onChange={e=>setForm({...form, name: e.target.value})} required /></div>}
-                    
-                    {mode !== 'reset' && <div style={styles.inputGroup}><Mail size={18}/><input style={styles.inputNo} type="email" placeholder="Email" onChange={e=>setForm({...form, email: e.target.value})} required /></div>}
-                    
-                    {mode === 'reset' && <input style={styles.inputFull} placeholder="6-Digit OTP" onChange={e=>setForm({...form, otp: e.target.value})} required />}
-                    
-                    {mode !== 'forgot' && (
+                    {(mode !== 'verify' && mode !== 'reset') && <div style={styles.inputGroup}><Mail size={18}/><input style={styles.inputNo} type="email" placeholder="Email" onChange={e=>setForm({...form, email: e.target.value})} required /></div>}
+                    {(mode === 'verify' || mode === 'reset') && <input style={styles.inputFull} placeholder="6-Digit OTP" onChange={e=>setForm({...form, otp: e.target.value})} required />}
+                    {(mode !== 'verify' && mode !== 'forgot') && (
                         <div style={styles.inputGroup}>
-                            <Lock size={18}/><input style={styles.inputNo} type={showPassword ? "text" : "password"} placeholder={mode === 'reset' ? "New Password" : "Password"} onChange={e=>setForm({...form, password: e.target.value})} required />
+                            <Lock size={18}/><input style={styles.inputNo} type={showPassword ? "text" : "password"} placeholder="Password" onChange={e=>setForm({...form, password: e.target.value})} required />
                             <div onClick={()=>setShowPassword(!showPassword)} style={{cursor:'pointer'}}>{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</div>
                         </div>
                     )}
                     <button style={styles.btn} type="submit">Continue</button>
-                    <p onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} style={styles.toggle}>{mode === 'login' ? "Need an account? Sign up" : "Already have an account? Login"}</p>
-                    {mode === 'login' && <p onClick={()=>setMode('forgot')} style={{textAlign:'center', fontSize:12, cursor:'pointer', color:'gray'}}>Forgot Password?</p>}
+                    <p onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} style={styles.toggle}>{mode === 'login' ? "Sign up" : "Login"}</p>
+                    {mode === 'login' && <p onClick={()=>setMode('forgot')} style={{textAlign:'center', fontSize:12, cursor:'pointer'}}>Forgot Password?</p>}
                 </form>
             </div>
         </div>
@@ -70,8 +71,7 @@ const styles = {
     inputGroup: { display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderRadius: 12, border: '1px solid #e2e8f0', background: '#f1f5f9' },
     inputNo: { border: 'none', background: 'transparent', outline: 'none', width: '100%' },
     inputFull: { padding: 14, borderRadius: 12, border: '1px solid #e2e8f0', background: '#f1f5f9', outline: 'none' },
-    btn: { padding: 14, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 12, cursor: 'pointer', fontWeight: 'bold', fontSize: 16 },
-    toggle: { cursor: 'pointer', color: '#3b82f6', textAlign: 'center', fontSize: 14 }
+    btn: { padding: 14, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 12, cursor: 'pointer', fontWeight: 'bold', fontSize: 16 }
 };
 
 export default Auth;
