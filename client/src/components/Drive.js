@@ -58,41 +58,49 @@ const Drive = () => {
 
     useEffect(() => { fetchData(); }, [fetchData]);
 
-    const handleUpload = async (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length === 0) return;
+   // ... in your frontend upload handler (e.g., in Drive.js onChange)
 
-        for (let file of files) {
-            try {
-                const initRes = await axios.post(`${API}/upload/initialize`, {}, authConfig());
-                const uploadId = initRes.data.uploadId;
-                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-                for (let i = 0; i < totalChunks; i++) {
-                    const chunk = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-                    const fd = new FormData();
-                    fd.append('chunk', chunk);
-                    fd.append('uploadId', uploadId); 
-                    fd.append('fileName', file.name);
-                    
-                    // You might want to add a progress indicator here
-                    await axios.post(`${API}/upload/chunk`, fd, authConfig());
-                }
-                await axios.post(`${API}/upload/complete`, { 
-                    fileName: file.name, 
-                    uploadId, 
-                    folderId: currentFolder?._id, 
-                    isVault: activeTab === 'vault' 
-                }, authConfig());
-                alert(`File "${file.name}" uploaded successfully!`);
-            } catch (err) {
-                console.error(`Error uploading file "${file.name}":`, err.response?.data || err);
-                alert(`Failed to upload "${file.name}": ${err.response?.data?.error || "Unknown error."}`);
-            }
+    try {
+        // 1. Initialize upload (get uploadId)
+        const initResponse = await fetch('YOUR_BACKEND_URL/api/upload/initialize', { /* ... auth headers ... */ });
+        const { uploadId } = await initResponse.json();
+
+        // (Assuming you have chunking logic here, and it successfully saves to /tmp)
+
+        // 2. Complete upload
+        const completeResponse = await fetch('YOUR_BACKEND_URL/api/upload/complete', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${yourAuthToken}`,
+            },
+            body: JSON.stringify({
+                fileName: file.name,
+                uploadId: uploadId, // Make sure this matches the one you got from initialize
+                folderId: yourCurrentFolderId, // Or null for root
+                isVault: false, // Or true if applicable
+                mimeType: file.type // <--- THIS IS THE MISSING PIECE!
+            }),
+        });
+
+        if (!completeResponse.ok) {
+            const errorData = await completeResponse.json();
+            throw new Error(errorData.error || 'Unknown upload completion error');
         }
-        fetchData(); // Refresh list after uploads
-    };
 
+        const uploadedFile = await completeResponse.json();
+        console.log('File uploaded successfully:', uploadedFile);
+        // ... update UI ...
+
+    } catch (error) {
+        console.error('Error uploading file:', file.name, error);
+        alert(`Failed to upload file "${file.name}": ${error.message || error}`);
+    }
+};
     const jumpToFolder = (index) => {
         if (index === -1) { 
             setCurrentFolder(null); 
