@@ -24,13 +24,13 @@ const s3Port = process.env.S3_ENDPOINT && new URL(process.env.S3_ENDPOINT).port 
 const s3UseSSL = process.env.S3_ENDPOINT ? new URL(process.env.S3_ENDPOINT).protocol === 'https:' : true;
 
 const minioClient = new Minio.Client({
-    endPoint: s3Host,
-    port: s3Port,
-    useSSL: s3UseSSL,
+    endPoint: (process.env.S3_ENDPOINT || '').replace('https://', '').split('/')[0],
+    port: 443,
+    useSSL: true,
     accessKey: process.env.S3_ACCESS_KEY,
     secretKey: process.env.S3_SECRET_KEY,
-    region: process.env.S3_REGION || 'us-east-1', // Ensure region is correct for your Supabase bucket
-    // pathStyle: true // Supabase S3 usually works better without pathStyle: true, or with virtual-hosted style
+    region: process.env.S3_REGION, // <-- This is where S3_REGION is used
+    pathStyle: true
 });
 
 // Create bucket if it doesn't exist (only once on startup or when needed)
