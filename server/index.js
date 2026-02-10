@@ -25,7 +25,7 @@
 // app.use(express.json({ limit: '50mb' }));
 
 // mongoose.connect(process.env.MONGO_URI).then(() => {
-//     app.listen(process.env.PORT || 5000, () => console.log("Server Running on 5000"));
+//     app.listen(process.env.PORT || 5000, () => console.log("Backend Live"));
 // });
 
 // // --- MODELS ---
@@ -58,8 +58,7 @@
 //     } catch (e) { res.status(401).json({ error: "Unauthorized" }); }
 // };
 
-// // --- ROUTES ---
-
+// // --- DRIVE LOGIC ---
 // app.get('/api/drive/contents', authenticate, async (req, res) => {
 //     const { folderId, tab, search, vaultUnlocked } = req.query;
 //     let query = { owner: req.user.id };
@@ -88,112 +87,117 @@
 //     res.json({ folders, files });
 // });
 
-// app.patch('/api/drive/move', authenticate, async (req, res) => {
-//     const { type, itemId, targetId } = req.body;
-//     const Model = type === 'file' ? File : Folder;
-//     let update = {};
-
-//     if (targetId === 'vault') update = { isVault: true, isStarred: false, parentFolder: null };
-//     else if (targetId === 'starred') update = { isStarred: true };
-//     else if (targetId === 'root') update = { isVault: false, parentFolder: null };
-//     else update = { parentFolder: targetId, isVault: false };
-
-//     await Model.updateOne({ _id: itemId, owner: req.user.id }, update);
+// // STAR LOGIC
+// app.patch('/api/drive/star/:type/:id', authenticate, async (req, res) => {
+//     const Model = req.params.type === 'file' ? File : Folder;
+//     await Model.updateOne({ _id: req.params.id, owner: req.user.id }, { isStarred: req.body.isStarred });
 //     res.json({ success: true });
 // });
 
+// // ADVANCED SHARE LOGIC
 // app.post('/api/files/share', authenticate, async (req, res) => {
 //     const { fileId, type, email, role, hours } = req.body;
 //     const Model = type === 'file' ? File : Folder;
 //     const expiresAt = hours > 0 ? new Date(Date.now() + hours * 3600000) : null;
-//     await Model.updateOne({ _id: fileId, owner: req.user.id }, { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt } } });
+//     await Model.updateOne(
+//         { _id: fileId, owner: req.user.id },
+//         { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt } } }
+//     );
 //     res.json({ success: true });
 // });
 
-// app.post('/api/vault/unlock', authenticate, async (req, res) => {
-//     const user = await User.findById(req.user.id);
-//     if (!user.vaultPIN) {
-//         user.vaultPIN = await bcrypt.hash(req.body.pin, 10);
-//         await user.save();
-//         return res.json({ setup: true });
-//     }
-//     if (await bcrypt.compare(req.body.pin, user.vaultPIN)) res.json({ success: true });
-//     else res.status(403).json({ error: "Wrong PIN" });
+// // DELETE ACCOUNT (Full Wipe)
+// app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
+//     const userId = req.user.id;
+//     const files = await File.find({ owner: userId });
+//     for (let f of files) { await supabase.storage.from(BUCKET_NAME).remove([f.s3Path]); }
+//     await File.deleteMany({ owner: userId });
+//     await Folder.deleteMany({ owner: userId });
+//     await User.findByIdAndDelete(userId);
+//     res.json({ success: true });
 // });
 
-// // UPLOAD
-// const upload = multer({ dest: '/tmp/' });
-// app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
-// app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
-//     const temp = path.join('/tmp', `${req.body.uploadId}-${req.body.fileName}`);
-//     fs.appendFileSync(temp, fs.readFileSync(req.file.path));
-//     fs.unlinkSync(req.file.path);
-//     res.sendStatus(200);
-// });
-// app.post('/api/upload/complete', authenticate, async (req, res) => {
-//     const { fileName, uploadId, folderId, isVault, mimeType } = req.body;
-//     const temp = path.join('/tmp', `${uploadId}-${fileName}`);
-//     const stats = fs.statSync(temp);
-//     const s3Path = `${req.user.id}/${Date.now()}-${fileName}`;
-//     await supabase.storage.from(BUCKET_NAME).upload(s3Path, fs.readFileSync(temp), { contentType: mimeType });
-//     const file = new File({ fileName, fileSize: stats.size, s3Path, mimeType, parentFolder: (folderId === "null" || !folderId) ? null : folderId, owner: req.user.id, isVault });
-//     await file.save();
-//     await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: stats.size } });
-//     fs.unlinkSync(temp);
-//     res.json(file);
-// });
-
-// // DOWNLOAD & PREVIEW (Synchronized Path)
+// // PREVIEW & DOWNLOAD
 // app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
 //     const file = await File.findById(req.params.id);
-//     if(!file) return res.status(404).json({error: "File not found"});
 //     const { data } = await supabase.storage.from(BUCKET_NAME).createSignedUrl(file.s3Path, 3600, {
 //         download: req.query.download === 'true' ? file.fileName : false
 //     });
 //     res.json({ url: data.signedUrl });
 // });
 
-// app.post('/api/folders', authenticate, async (req, res) => {
-//     const folder = new Folder({ ...req.body, owner: req.user.id });
-//     await folder.save();
-//     res.json(folder);
+// // DELETE ITEM
+// app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
+//     const Model = req.params.type === 'file' ? File : Folder;
+//     if (req.params.type === 'file') {
+//         const file = await File.findOne({ _id: req.params.id, owner: req.user.id });
+//         if (file) {
+//             await supabase.storage.from(BUCKET_NAME).remove([file.s3Path]);
+//             await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: -file.fileSize } });
+//         }
+//     }
+//     await Model.deleteOne({ _id: req.params.id, owner: req.user.id });
+//     res.json({ success: true });
 // });
 
-// // DELETE (Synchronized Path)
-// app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
-//     try {
-//         if (req.params.type === 'file') {
-//             const file = await File.findOne({ _id: req.params.id, owner: req.user.id });
-//             if (file) {
-//                 await supabase.storage.from(BUCKET_NAME).remove([file.s3Path]);
-//                 await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: -file.fileSize } });
-//                 await File.deleteOne({ _id: req.params.id });
-//             }
-//         } else {
-//             await Folder.deleteOne({ _id: req.params.id, owner: req.user.id });
-//         }
-//         res.json({ success: true });
-//     } catch (e) { res.status(500).json({ error: "Delete failed" }); }
+// // OTHER ROUTES (Move, Vault, Upload, Auth) - Same logic as before
+// app.patch('/api/drive/move', authenticate, async (req, res) => {
+//     const { type, itemId, targetId } = req.body;
+//     const Model = type === 'file' ? File : Folder;
+//     let upd = targetId === 'root' ? { parentFolder: null, isVault: false } : { parentFolder: targetId, isVault: false };
+//     if (targetId === 'vault') upd = { isVault: true, parentFolder: null };
+//     await Model.updateOne({ _id: itemId, owner: req.user.id }, upd);
+//     res.json({ success: true });
+// });
+
+// const upload = multer({ dest: '/tmp/' });
+// app.post('/api/upload/initialize', authenticate, (req, res) => res.json({ uploadId: Date.now().toString() }));
+// app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) => {
+//     fs.appendFileSync(path.join('/tmp', `${req.body.uploadId}-${req.body.fileName}`), fs.readFileSync(req.file.path));
+//     fs.unlinkSync(req.file.path);
+//     res.sendStatus(200);
+// });
+// app.post('/api/upload/complete', authenticate, async (req, res) => {
+//     const { fileName, uploadId, folderId, isVault, mimeType } = req.body;
+//     const temp = path.join('/tmp', `${uploadId}-${fileName}`);
+//     const s3Path = `${req.user.id}/${Date.now()}-${fileName}`;
+//     await supabase.storage.from(BUCKET_NAME).upload(s3Path, fs.readFileSync(temp), { contentType: mimeType });
+//     const file = new File({ fileName, fileSize: fs.statSync(temp).size, s3Path, mimeType, parentFolder: folderId === "null" ? null : folderId, owner: req.user.id, isVault });
+//     await file.save();
+//     await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: fs.statSync(temp).size } });
+//     fs.unlinkSync(temp);
+//     res.json(file);
+// });
+
+// app.post('/api/folders', authenticate, async (req, res) => {
+//     const f = new Folder({ ...req.body, owner: req.user.id });
+//     await f.save();
+//     res.json(f);
 // });
 
 // app.get('/api/drive/storage', authenticate, async (req, res) => {
-//     const user = await User.findById(req.user.id);
-//     res.json({ used: user.storageUsed, limit: user.storageLimit });
+//     const u = await User.findById(req.user.id);
+//     res.json({ used: u.storageUsed, limit: u.storageLimit });
 // });
 
-// // AUTH
 // app.post('/api/auth/register', async (req, res) => {
-//     const hash = await bcrypt.hash(req.body.password, 10);
-//     const user = new User({ ...req.body, password: hash });
-//     await user.save();
+//     const h = await bcrypt.hash(req.body.password, 10);
+//     await new User({ ...req.body, password: h }).save();
 //     res.json({ success: true });
 // });
+
 // app.post('/api/auth/login', async (req, res) => {
-//     const user = await User.findOne({ email: req.body.email });
-//     if (user && await bcrypt.compare(req.body.password, user.password)) {
-//         const token = jwt.sign({ id: user._id, email: user.email }, SECRET);
-//         res.json({ token, userName: user.name, userId: user._id });
-//     } else res.status(401).json({ error: "Invalid credentials" });
+//     const u = await User.findOne({ email: req.body.email });
+//     if (u && await bcrypt.compare(req.body.password, u.password)) {
+//         res.json({ token: jwt.sign({ id: u._id, email: u.email }, SECRET), userName: u.name });
+//     } else res.status(401).json({ error: "Invalid" });
+// });
+
+// app.post('/api/vault/unlock', authenticate, async (req, res) => {
+//     const u = await User.findById(req.user.id);
+//     if (!u.vaultPIN) { u.vaultPIN = await bcrypt.hash(req.body.pin, 10); await u.save(); return res.json({ setup: true }); }
+//     if (await bcrypt.compare(req.body.pin, u.vaultPIN)) res.json({ success: true });
+//     else res.status(403).json({ error: "Fail" });
 // });
 require('dotenv').config();
 const express = require('express');
@@ -222,7 +226,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 mongoose.connect(process.env.MONGO_URI).then(() => {
-    app.listen(process.env.PORT || 5000, () => console.log("Backend Live"));
+    app.listen(process.env.PORT || 5000, () => console.log("Backend Live & Fixed"));
 });
 
 // --- MODELS ---
@@ -255,7 +259,8 @@ const authenticate = (req, res, next) => {
     } catch (e) { res.status(401).json({ error: "Unauthorized" }); }
 };
 
-// --- DRIVE LOGIC ---
+// --- ROUTES ---
+
 app.get('/api/drive/contents', authenticate, async (req, res) => {
     const { folderId, tab, search, vaultUnlocked } = req.query;
     let query = { owner: req.user.id };
@@ -269,7 +274,7 @@ app.get('/api/drive/contents', authenticate, async (req, res) => {
         query.isVault = true;
     } else {
         query.isVault = false;
-        query.parentFolder = (folderId === "null" || !folderId) ? null : folderId;
+        query.parentFolder = (folderId === "null" || !folderId || folderId === "undefined") ? null : folderId;
     }
 
     if (search) {
@@ -284,26 +289,23 @@ app.get('/api/drive/contents', authenticate, async (req, res) => {
     res.json({ folders, files });
 });
 
-// STAR LOGIC
+// FIXED STAR ROUTE
 app.patch('/api/drive/star/:type/:id', authenticate, async (req, res) => {
-    const Model = req.params.type === 'file' ? File : Folder;
-    await Model.updateOne({ _id: req.params.id, owner: req.user.id }, { isStarred: req.body.isStarred });
-    res.json({ success: true });
+    try {
+        const Model = req.params.type === 'file' ? File : Folder;
+        await Model.updateOne({ _id: req.params.id, owner: req.user.id }, { isStarred: req.body.isStarred });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Star failed" }); }
 });
 
-// ADVANCED SHARE LOGIC
 app.post('/api/files/share', authenticate, async (req, res) => {
     const { fileId, type, email, role, hours } = req.body;
     const Model = type === 'file' ? File : Folder;
     const expiresAt = hours > 0 ? new Date(Date.now() + hours * 3600000) : null;
-    await Model.updateOne(
-        { _id: fileId, owner: req.user.id },
-        { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt } } }
-    );
+    await Model.updateOne({ _id: fileId, owner: req.user.id }, { $push: { sharedWith: { email: email.toLowerCase(), role, expiresAt } } });
     res.json({ success: true });
 });
 
-// DELETE ACCOUNT (Full Wipe)
 app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     const userId = req.user.id;
     const files = await File.find({ owner: userId });
@@ -314,16 +316,15 @@ app.delete('/api/auth/delete-account', authenticate, async (req, res) => {
     res.json({ success: true });
 });
 
-// PREVIEW & DOWNLOAD
 app.get('/api/drive/preview/:id', authenticate, async (req, res) => {
     const file = await File.findById(req.params.id);
+    if (!file) return res.status(404).json({ error: "File not found" });
     const { data } = await supabase.storage.from(BUCKET_NAME).createSignedUrl(file.s3Path, 3600, {
         download: req.query.download === 'true' ? file.fileName : false
     });
     res.json({ url: data.signedUrl });
 });
 
-// DELETE ITEM
 app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
     const Model = req.params.type === 'file' ? File : Folder;
     if (req.params.type === 'file') {
@@ -337,11 +338,10 @@ app.delete('/api/drive/delete/:type/:id', authenticate, async (req, res) => {
     res.json({ success: true });
 });
 
-// OTHER ROUTES (Move, Vault, Upload, Auth) - Same logic as before
 app.patch('/api/drive/move', authenticate, async (req, res) => {
     const { type, itemId, targetId } = req.body;
     const Model = type === 'file' ? File : Folder;
-    let upd = targetId === 'root' ? { parentFolder: null, isVault: false } : { parentFolder: targetId, isVault: false };
+    let upd = (targetId === 'root' || targetId === 'null') ? { parentFolder: null, isVault: false } : { parentFolder: targetId, isVault: false };
     if (targetId === 'vault') upd = { isVault: true, parentFolder: null };
     await Model.updateOne({ _id: itemId, owner: req.user.id }, upd);
     res.json({ success: true });
@@ -354,20 +354,47 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), (req, res) =
     fs.unlinkSync(req.file.path);
     res.sendStatus(200);
 });
+
+// FIXED UPLOAD COMPLETE ROUTE (Handle folderId string "null")
 app.post('/api/upload/complete', authenticate, async (req, res) => {
-    const { fileName, uploadId, folderId, isVault, mimeType } = req.body;
-    const temp = path.join('/tmp', `${uploadId}-${fileName}`);
-    const s3Path = `${req.user.id}/${Date.now()}-${fileName}`;
-    await supabase.storage.from(BUCKET_NAME).upload(s3Path, fs.readFileSync(temp), { contentType: mimeType });
-    const file = new File({ fileName, fileSize: fs.statSync(temp).size, s3Path, mimeType, parentFolder: folderId === "null" ? null : folderId, owner: req.user.id, isVault });
-    await file.save();
-    await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: fs.statSync(temp).size } });
-    fs.unlinkSync(temp);
-    res.json(file);
+    try {
+        const { fileName, uploadId, folderId, isVault, mimeType } = req.body;
+        const temp = path.join('/tmp', `${uploadId}-${fileName}`);
+        if (!fs.existsSync(temp)) return res.status(400).json({ error: "Temp file missing" });
+
+        const s3Path = `${req.user.id}/${Date.now()}-${fileName}`;
+        const fileBuffer = fs.readFileSync(temp);
+        const stats = fs.statSync(temp);
+
+        await supabase.storage.from(BUCKET_NAME).upload(s3Path, fileBuffer, { contentType: mimeType });
+
+        const file = new File({ 
+            fileName, 
+            fileSize: stats.size, 
+            s3Path, 
+            mimeType, 
+            parentFolder: (folderId === "null" || !folderId) ? null : folderId, 
+            owner: req.user.id, 
+            isVault: isVault === true || isVault === 'true'
+        });
+
+        await file.save();
+        await User.findByIdAndUpdate(req.user.id, { $inc: { storageUsed: stats.size } });
+        fs.unlinkSync(temp);
+        res.json(file);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Completion failed" });
+    }
 });
 
 app.post('/api/folders', authenticate, async (req, res) => {
-    const f = new Folder({ ...req.body, owner: req.user.id });
+    const f = new Folder({ 
+        name: req.body.name, 
+        parentFolder: (req.body.parentFolder === "null" || !req.body.parentFolder) ? null : req.body.parentFolder, 
+        owner: req.user.id,
+        isVault: req.body.isVault 
+    });
     await f.save();
     res.json(f);
 });
