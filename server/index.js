@@ -10,7 +10,8 @@ const bcrypt = require('bcryptjs');
 const Minio = require('minio');
 const nodemailer = require('nodemailer');
 const pdf = require('pdf-parse'); 
-
+const authRoutes = require('./routes/Auth');
+app.use('/api/auth', authRoutes);
 const app = express();
 const SECRET = process.env.JWT_SECRET || "FINAL_DRIVE_PRO_2026";
 
