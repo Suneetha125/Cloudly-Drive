@@ -53,7 +53,7 @@ async function ensureBucketExists(bucketName) {
         console.error(`--- END BUCKET EXISTENCE CHECK ERROR ---`);
     }
 }
-ensureBucketExists();
+ensureBucketExists(BUCKET_NAME);
 
 
 // 2. Email Setup - Fixed IPv6 Error for Render
