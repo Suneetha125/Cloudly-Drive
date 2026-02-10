@@ -1,22 +1,22 @@
-// Drive.js (UPDATED with Dark/Light Mode, Shared Sidebar, Manage Access)
+// Drive.js (UPDATED with Dark/Light Mode, Shared Sidebar, Manage Access, robust file upload, fixed navigation, and search)
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { 
   FolderPlus, Upload, Trash2, FileText, Search, LogOut, Folder, X, ChevronRight, Sun, Moon, 
   MoreVertical, Share2, HardDrive, Users, Star, Shield, LayoutGrid, Eye, Fingerprint, Move, UserX,
-  Link, Download // Added Link for shareable link, Download for direct download
+  Link, Download 
 } from 'lucide-react';
 
-const API = "https://cloudly-dj52.onrender.com/api";
-const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+const API = "https://cloudly-dj52.onrender.com/api"; // Ensure this is your correct backend URL
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks (Adjust as per your backend's chunk size expectation)
 
 const Drive = () => {
     const [filesList, setFilesList] = useState([]);
     const [foldersList, setFoldersList] = useState([]);
-    const [currentFolder, setCurrentFolder] = useState(null);
+    const [currentFolder, setCurrentFolder] = useState(null); // null for root folder
     const [activeTab, setActiveTab] = useState('files'); // 'files', 'starred', 'vault', 'shared'
-    const [path, setPath] = useState([]); // Breadcrumb path
+    const [pathHistory, setPathHistory] = useState([]); // To manage navigation history for breadcrumbs and back
     const [previewFile, setPreviewFile] = useState(null);
     const [activeMenu, setActiveMenu] = useState(null); // For context menu on files/folders
     const [profileOpen, setProfileOpen] = useState(false);
@@ -25,6 +25,8 @@ const Drive = () => {
     const [showShareModal, setShowShareModal] = useState(false);
     const [itemToShare, setItemToShare] = useState(null);
     const [shareForm, setShareForm] = useState({ email: '', role: 'viewer', hours: 0 });
+    const [uploadProgress, setUploadProgress] = useState({}); // To track progress of multiple files
+    const [searchTerm, setSearchTerm] = useState(''); // For search functionality
 
     const navigate = useNavigate();
     const authConfig = useCallback(() => ({ 
@@ -39,7 +41,7 @@ const Drive = () => {
 
     const fetchData = useCallback(async () => {
         try {
-            const fId = currentFolder ? currentFolder._id : "null";
+            const fId = currentFolder ? currentFolder._id : "null"; // Use "null" string for root folder ID
             const res = await axios.get(`${API}/drive/contents?folderId=${fId}&tab=${activeTab}`, authConfig());
             setFilesList(res.data.files || []); 
             setFoldersList(res.data.folders || []);
@@ -56,62 +58,111 @@ const Drive = () => {
         }
     }, [currentFolder, activeTab, authConfig, navigate]);
 
-    useEffect(() => { fetchData(); }, [fetchData]);
+    useEffect(() => { 
+        fetchData(); 
+        // Close menus when folder changes
+        setActiveMenu(null); 
+        setProfileOpen(false);
+    }, [fetchData, currentFolder]);
 
-   // ... in your frontend upload handler (e.g., in Drive.js onChange)
+    // --- NEW/UPDATED FILE UPLOAD LOGIC ---
+    const handleUpload = async (event) => {
+        const selectedFiles = Array.from(event.target.files);
+        if (selectedFiles.length === 0) return;
 
-const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
+        for (const file of selectedFiles) {
+            try {
+                // Reset progress for this file
+                setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
 
-    try {
-        // 1. Initialize upload (get uploadId)
-        const initResponse = await fetch('YOUR_BACKEND_URL/api/upload/initialize', { /* ... auth headers ... */ });
-        const { uploadId } = await initResponse.json();
+                // 1. Initialize upload (get uploadId)
+                const initResponse = await axios.post(`${API}/upload/initialize`, {
+                    fileName: file.name,
+                    fileSize: file.size,
+                    mimeType: file.type // Send mimeType early if backend needs it
+                }, authConfig());
+                const { uploadId } = initResponse.data;
+                console.log(`Upload for ${file.name} initialized with ID:`, uploadId);
 
-        // (Assuming you have chunking logic here, and it successfully saves to /tmp)
+                // 2. Upload file in chunks
+                let uploadedBytes = 0;
+                let partNumber = 1;
 
-        // 2. Complete upload
-        const completeResponse = await fetch('YOUR_BACKEND_URL/api/upload/complete', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${yourAuthToken}`,
-            },
-            body: JSON.stringify({
-                fileName: file.name,
-                uploadId: uploadId, // Make sure this matches the one you got from initialize
-                folderId: yourCurrentFolderId, // Or null for root
-                isVault: false, // Or true if applicable
-                mimeType: file.type // <--- THIS IS THE MISSING PIECE!
-            }),
-        });
+                while (uploadedBytes < file.size) {
+                    const chunk = file.slice(uploadedBytes, uploadedBytes + CHUNK_SIZE);
+                    const formData = new FormData();
+                    formData.append('chunk', chunk);
+                    formData.append('uploadId', uploadId);
+                    formData.append('partNumber', partNumber); // Important for Minio MPU
+                    formData.append('fileName', file.name); // Include filename with chunk for debugging/tracking if needed
 
-        if (!completeResponse.ok) {
-            const errorData = await completeResponse.json();
-            throw new Error(errorData.error || 'Unknown upload completion error');
+                    await axios.post(`${API}/upload/chunk`, formData, {
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem("token")}`,
+                            'Content-Type': 'multipart/form-data' 
+                        },
+                        onUploadProgress: (progressEvent) => {
+                            const percent = Math.round((uploadedBytes + progressEvent.loaded) * 100 / file.size);
+                            setUploadProgress(prev => ({ ...prev, [file.name]: percent }));
+                        }
+                    });
+
+                    uploadedBytes += chunk.size;
+                    partNumber++;
+                }
+                console.log(`All chunks for ${file.name} uploaded successfully.`);
+
+
+                // 3. Complete upload
+                const completeResponse = await axios.post(`${API}/upload/complete`, {
+                    fileName: file.name,
+                    uploadId: uploadId,
+                    folderId: currentFolder ? currentFolder._id : null, // Send null for root
+                    isVault: activeTab === 'vault', // Determine if it's a vault file
+                    mimeType: file.type, // CRITICAL: This was the missing piece!
+                    fileSize: file.size // Also good to send for verification
+                }, authConfig());
+
+                console.log(`File "${file.name}" uploaded successfully!`, completeResponse.data);
+                alert(`File "${file.name}" uploaded successfully!`);
+                setUploadProgress(prev => ({ ...prev, [file.name]: 100 })); // Mark as 100%
+            } catch (err) {
+                console.error(`Error uploading file "${file.name}":`, err.response ? err.response.data : err.message);
+                alert(`Failed to upload file "${file.name}": ${err.response?.data?.error || err.message}`);
+                setUploadProgress(prev => ({ ...prev, [file.name]: -1 })); // Mark as failed
+            }
         }
-
-        const uploadedFile = await completeResponse.json();
-        console.log('File uploaded successfully:', uploadedFile);
-        // ... update UI ...
-
-    } catch (error) {
-        console.error('Error uploading file:', file.name, error);
-        alert(`Failed to upload file "${file.name}": ${error.message || error}`);
-    }
-};
-    const jumpToFolder = (index) => {
-        if (index === -1) { 
-            setCurrentFolder(null); 
-            setPath([]); 
-        } else { 
-            const newPath = path.slice(0, index + 1); 
-            setCurrentFolder(newPath[index]); 
-            setPath(newPath); 
-        }
-        setActiveMenu(null); // Close any open context menu
+        fetchData(); // Refresh contents after all uploads attempt to complete
+        event.target.value = null; // Clear input to allow re-uploading the same file
     };
+    // --- END NEW/UPDATED FILE UPLOAD LOGIC ---
+
+    // --- NAVIGATION HANDLERS ---
+    const openFolder = (folder) => {
+        setPathHistory(prev => [...prev, currentFolder]); // Save current folder to history
+        setCurrentFolder(folder); // Set the folder object
+    };
+
+    const goBack = () => {
+        if (pathHistory.length > 0) {
+            const prevFolder = pathHistory.pop(); // Get last folder from history
+            setCurrentFolder(prevFolder); // Set the previous folder object (or null for root)
+            setPathHistory([...pathHistory]); // Update state to trigger re-render
+        }
+    };
+
+    const jumpToFolderInBreadcrumb = (index) => {
+        if (index === -1) { // Clicked "My Drive"
+            setCurrentFolder(null); 
+            setPathHistory([]); 
+        } else { // Clicked a folder in the breadcrumb
+            const newPathHistory = pathHistory.slice(0, index); 
+            setCurrentFolder(pathHistory[index]); // Set the folder object
+            setPathHistory(newPathHistory); 
+        }
+        setActiveMenu(null); 
+    };
+    // --- END NAVIGATION HANDLERS ---
 
     const toggleTheme = () => setIsDark(!isDark);
 
@@ -141,9 +192,9 @@ const handleFileUpload = async (event) => {
 
     const handleDownload = async (file) => {
         try {
-            const res = await axios.get(`${API}/files/preview/${file._id}`, authConfig());
+            const res = await axios.get(`${API}/files/download/${file._id}`, authConfig()); // Assuming /files/download for direct download URL
             const downloadUrl = res.data.url;
-            window.open(downloadUrl, '_blank'); // Open in new tab to trigger download
+            window.open(downloadUrl, '_blank'); 
         } catch (err) {
             console.error("Download error:", err.response?.data || err);
             alert(`Failed to download file: ${err.response?.data?.error || "Unknown error."}`);
@@ -178,14 +229,13 @@ const handleFileUpload = async (event) => {
         accentLight: isDark ? '#60a5fa' : '#bfdbfe'
     };
 
-    // Updated styles to reflect theme changes and new UI elements
     const dynamicStyles = {
         nav: { display:'flex', gap:15, padding:'12px 20px', borderRadius:10, cursor:'pointer', color: theme.text },
         navAct: { display:'flex', gap:15, padding:'12px 20px', borderRadius:10, cursor:'pointer', background: theme.accentLight, color: theme.accent, fontWeight:'bold' },
         userCircle: { width:32, height:32, borderRadius:'50%', background:theme.accent, color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:'bold', cursor:'pointer' },
-        btnBlue: { background:theme.accent, color:'#fff', padding:'12px 24px', borderRadius:'24px', cursor:'pointer', display:'flex', gap:10, fontWeight:'500', border:'none' },
+        btnBlue: { background:theme.accent, color:'#fff', padding:'12px 24px', borderRadius:'24px', cursor:'pointer', display:'flex', gap:10, fontWeight:'500', border:'none', alignItems:'center', justifyContent:'center' },
         grid: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:25, marginTop:30 },
-        card: { padding:25, borderRadius:16, border:`1px solid ${theme.border}`, textAlign:'center', position:'relative', cursor:'pointer', background: theme.card },
+        card: { padding:25, borderRadius:16, border:`1px solid ${theme.border}`, textAlign:'center', position:'relative', cursor:'pointer', background: theme.card, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'space-between' },
         dots: { position:'absolute', top:15, right:15, color:theme.text, cursor:'pointer' },
         drop: { position:'absolute', top:40, right:15, borderRadius:8, boxShadow:'0 4px 15px rgba(0,0,0,0.1)', zIndex:3000, padding:10, width:160, display:'flex', flexDirection:'column', gap:10, fontSize:13, textAlign:'left', background:theme.card, border:`1px solid ${theme.border}`, color:theme.text },
         overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' },
@@ -195,16 +245,49 @@ const handleFileUpload = async (event) => {
         searchBar: { background: theme.card, width: '500px', padding: '12px 20px', borderRadius: '12px', display:'flex', alignItems:'center', border:`1px solid ${theme.border}` },
         breadcrumb: { display:'flex', alignItems:'center', gap:10, fontSize:18, marginBottom:30, color:theme.text },
         iconBtn: { background:'none', border:'none', cursor:'pointer', color:'inherit', padding:8 },
-        modalContent: { background: theme.card, padding: 30, borderRadius: 15, boxShadow: '0 5px 20px rgba(0,0,0,0.2)', width: 400, display:'flex', flexDirection:'column', gap:20, color:theme.text }
+        modalContent: { background: theme.card, padding: 30, borderRadius: 15, boxShadow: '0 5px 20px rgba(0,0,0,0.2)', width: 400, display:'flex', flexDirection:'column', gap:20, color:theme.text },
+        storageBox: { 
+            padding: '20px 0',
+            borderTop: `1px solid ${theme.border}`,
+            marginTop: 'auto', 
+            color: theme.text
+        },
+        progressBarContainer: {
+            width: '100%',
+            height: '4px',
+            background: theme.border,
+            borderRadius: '2px',
+            marginTop: '5px',
+            overflow: 'hidden'
+        },
+        progressBar: {
+            height: '100%',
+            background: theme.accent,
+            width: '0%', 
+            transition: 'width 0.1s ease-in-out'
+        },
+        progressText: {
+            fontSize: '10px',
+            color: theme.text,
+            marginTop: '5px'
+        }
     };
+
+    // Filtered lists for display based on search term
+    const filteredFolders = foldersList.filter(folder => 
+        folder.name.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+    const filteredFiles = filesList.filter(file => 
+        file.fileName.toLowerCase().includes(searchTerm.toLowerCase())
+    );
 
     return (
         <div style={{ minHeight: '100vh', backgroundColor: theme.bg, color: theme.text, display: 'flex' }} onClick={() => {setActiveMenu(null); setProfileOpen(false)}}>
             {/* Sidebar */}
             <aside style={{ width: 280, borderRight: `1px solid ${theme.border}`, padding: '30px 15px', display: 'flex', flexDirection: 'column', gap: 5, background: theme.card }}>
                 <h1 style={{fontSize:20, fontWeight:'bold', marginBottom:30}}>Cloudly</h1>
-                <div style={activeTab === 'files' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('files'); setCurrentFolder(null); setPath([]);}}><LayoutGrid size={20}/> My Drive</div>
-                <div style={activeTab === 'shared' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('shared'); setCurrentFolder(null); setPath([]);}}><Users size={20}/> Shared with me</div>
+                <div style={activeTab === 'files' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('files'); setCurrentFolder(null); setPathHistory([]);}}><LayoutGrid size={20}/> My Drive</div>
+                <div style={activeTab === 'shared' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => {setActiveTab('shared'); setCurrentFolder(null); setPathHistory([]);}}><Users size={20}/> Shared with me</div>
                 <div style={activeTab === 'starred' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={() => setActiveTab('starred')}><Star size={20}/> Starred</div>
                 <div style={activeTab === 'vault' ? dynamicStyles.navAct : dynamicStyles.nav} onClick={async ()=>{ 
                     const p = prompt("Enter Vault PIN:"); 
@@ -213,14 +296,14 @@ const handleFileUpload = async (event) => {
                             await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig());
                             setActiveTab('vault');
                             setCurrentFolder(null); // Reset path for vault
-                            setPath([]);
+                            setPathHistory([]);
                             alert("Vault unlocked!");
                         } catch (err) {
                             alert(err.response?.data?.error || "Failed to unlock vault.");
                         }
                     }
                 }}><Shield size={20} color="#ef4444"/> Vault</div>
-                <div style={dynamicStyles.storageBox}> {/* Consider moving storageBox style inline or to dynamicStyles */}
+                <div style={dynamicStyles.storageBox}> 
                     <p style={{fontSize:11, marginTop:20}}>Storage: {(storage.used/1024/1024/1024).toFixed(2)}GB / {(storage.limit/1024/1024/1024).toFixed(2)}GB</p>
                     <div style={dynamicStyles.bar}><div style={{width:`${(storage.used/storage.limit)*100}%`, height:'100%', background:theme.accent}}></div></div>
                 </div>
@@ -228,7 +311,15 @@ const handleFileUpload = async (event) => {
 
             <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <header style={{ height: 80, padding: '0 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${theme.border}` }}>
-                    <div style={dynamicStyles.searchBar}><Search size={18} color="#94a3b8"/><input placeholder="Search files..." style={{border:'none', background:'transparent', marginLeft:15, width:'100%', outline:'none', color:theme.text}} /></div>
+                    <div style={dynamicStyles.searchBar}>
+                        <Search size={18} color="#94a3b8"/>
+                        <input 
+                            placeholder="Search files and folders..." 
+                            style={{border:'none', background:'transparent', marginLeft:15, width:'100%', outline:'none', color:theme.text}} 
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
                     <div style={{ display: 'flex', gap: 20, alignItems: 'center', position:'relative' }}>
                         <button onClick={toggleTheme} style={dynamicStyles.iconBtn}>
                             {isDark ? <Sun size={20} color={theme.text}/> : <Moon size={20} color={theme.text}/>}
@@ -246,9 +337,21 @@ const handleFileUpload = async (event) => {
 
                 <div style={{ padding: 40, flex: 1, overflowY: 'auto' }}>
                     <div style={dynamicStyles.breadcrumb}>
-                        <span onClick={() => jumpToFolder(-1)} style={{cursor:'pointer'}}>My Drive</span>
-                        {path.map((p, i) => <span key={p._id} onClick={()=>{jumpToFolder(i)}} style={{cursor:'pointer'}}> <ChevronRight size={16} style={{display:'inline'}}/> {p.name}</span>)}
+                        <span onClick={() => jumpToFolderInBreadcrumb(-1)} style={{cursor:'pointer'}}>My Drive</span>
+                        {pathHistory.map((folder, i) => (
+                            <span key={folder._id || `root-${i}`}> 
+                                <ChevronRight size={16} style={{display:'inline'}}/> 
+                                <span onClick={()=>{jumpToFolderInBreadcrumb(i)}} style={{cursor:'pointer'}}>{folder?.name || 'Root'}</span>
+                            </span>
+                        ))}
+                         {currentFolder && (
+                            <span> 
+                                <ChevronRight size={16} style={{display:'inline'}}/> 
+                                <span>{currentFolder.name}</span>
+                            </span>
+                        )}
                         <div style={{marginLeft:'auto', display:'flex', gap:10}}>
+                            {currentFolder && <button onClick={goBack} style={{...dynamicStyles.btnBlue, background: theme.card, color: theme.text, border:`1px solid ${theme.border}`}}>Back</button>}
                             {activeTab !== 'shared' && activeTab !== 'starred' && activeTab !== 'trash' && (
                                 <>
                                     <label style={dynamicStyles.btnBlue}><Upload size={18}/> Upload<input type="file" hidden multiple onChange={handleUpload}/></label>
@@ -259,8 +362,8 @@ const handleFileUpload = async (event) => {
                     </div>
 
                     <div style={dynamicStyles.grid}>
-                        {foldersList.map(f => (
-                            <div key={`folder-${f._id}`} style={{...dynamicStyles.card}} onDoubleClick={()=>{setPath([...path, f]); setCurrentFolder(f)}}>
+                        {filteredFolders.map(f => (
+                            <div key={`folder-${f._id}`} style={{...dynamicStyles.card}} onDoubleClick={()=>{openFolder(f)}}>
                                 <Folder size={48} color="#fbbf24" fill="#fbbf24" style={{opacity:0.7}}/>
                                 <p style={{marginTop:15, fontWeight:'bold', color:theme.text}}>{f.name}</p>
                                 {activeTab !== 'shared' && activeTab !== 'starred' && activeTab !== 'trash' && (
@@ -268,17 +371,26 @@ const handleFileUpload = async (event) => {
                                 )}
                                 {activeMenu === `folder-${f._id}` && (
                                     <div style={{...dynamicStyles.drop}}>
-                                        <div onClick={(e)=>{e.stopPropagation(); jumpToFolder(path.length) /* Effectively open current folder*/}}><Eye size={14}/> Open</div>
-                                        <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Enter target folder ID to move to (or 'root' for main drive):"); if(tid) axios.patch(`${API}/drive/move`, {type:'folder', itemId:f._id, targetId:tid}, authConfig()).then(fetchData).catch(err => alert(err.response?.data?.error || "Failed to move folder."))}}><Move size={14}/> Move</div>
+                                        <div onClick={(e)=>{e.stopPropagation(); openFolder(f)}}><Eye size={14}/> Open</div> {/* Fixed: uses openFolder */}
+                                        <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Enter target folder ID to move to (or 'root' for main drive):"); if(tid) axios.patch(`${API}/drive/move`, {type:'folder', itemId:f._id, targetId:tid==='root'?null:tid}, authConfig()).then(fetchData).catch(err => alert(err.response?.data?.error || "Failed to move folder."))}}><Move size={14}/> Move</div>
                                         <div style={{color:'red'}} onClick={(e)=>{e.stopPropagation(); handleDelete('folder', f._id)}}><Trash2 size={14}/> Delete</div>
                                     </div>
                                 )}
                             </div>
                         ))}
-                        {filesList.map(f => (
+                        {filteredFiles.map(f => (
                             <div key={`file-${f._id}`} style={{...dynamicStyles.card}}>
                                 <FileText size={48} color={theme.accent}/>
                                 <p style={{marginTop:15, fontSize:13, color:theme.text}}>{f.fileName}</p>
+                                {uploadProgress[f.fileName] !== undefined && uploadProgress[f.fileName] < 100 && (
+                                    <div style={dynamicStyles.progressBarContainer}>
+                                        <div style={{...dynamicStyles.progressBar, width: `${uploadProgress[f.fileName]}%`}}></div>
+                                        <p style={dynamicStyles.progressText}>Uploading: {uploadProgress[f.fileName]}%</p>
+                                    </div>
+                                )}
+                                {uploadProgress[f.fileName] === -1 && (
+                                    <p style={{...dynamicStyles.progressText, color:'red'}}>Upload Failed</p>
+                                )}
                                 <MoreVertical style={dynamicStyles.dots} onClick={(e)=>{e.stopPropagation(); setActiveMenu(`file-${f._id}`)}}/>
                                 {activeMenu === `file-${f._id}` && (
                                     <div style={{...dynamicStyles.drop}}>
@@ -287,7 +399,7 @@ const handleFileUpload = async (event) => {
                                         {f.owner === localStorage.getItem("userId") && ( // Only owner can move/share/delete
                                             <>
                                                 <div onClick={(e)=>{e.stopPropagation(); openShareModal(f)}}><Share2 size={14}/> Share</div>
-                                                <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Enter target folder ID to move to (or 'root' for main drive):"); if(tid) axios.patch(`${API}/drive/move`, {type:'file', itemId:f._id, targetId:tid}, authConfig()).then(fetchData).catch(err => alert(err.response?.data?.error || "Failed to move file."))}}><Move size={14}/> Move</div>
+                                                <div onClick={(e)=>{e.stopPropagation(); const tid=prompt("Enter target folder ID to move to (or 'root' for main drive):"); if(tid) axios.patch(`${API}/drive/move`, {type:'file', itemId:f._id, targetId:tid==='root'?null:tid}, authConfig()).then(fetchData).catch(err => alert(err.response?.data?.error || "Failed to move file."))}}><Move size={14}/> Move</div>
                                                 <div style={{color:'red'}} onClick={(e)=>{e.stopPropagation(); handleDelete('file', f._id)}}><Trash2 size={14}/> Delete</div>
                                             </>
                                         )}
@@ -296,8 +408,8 @@ const handleFileUpload = async (event) => {
                             </div>
                         ))}
                     </div>
-                    {filesList.length === 0 && foldersList.length === 0 && (
-                        <p style={{textAlign:'center', marginTop:50, color:theme.text}}>No items found in this {activeTab === 'files' ? 'folder' : activeTab}.</p>
+                    {filteredFiles.length === 0 && filteredFolders.length === 0 && (
+                        <p style={{textAlign:'center', marginTop:50, color:theme.text}}>No items found in this {activeTab === 'files' ? 'folder' : activeTab} or matching your search.</p>
                     )}
                 </div>
             </main>
