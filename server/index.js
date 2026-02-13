@@ -224,15 +224,18 @@ const transporter = nodemailer.createTransport({
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
-    }
+    },
+    // --- THE FIX FOR ENETUNREACH ---
+    // This forces the connection to use IPv4 instead of IPv6
+    family: 4 
 });
 
-// Add this temporary "Verification" block to check if your email settings are correct
+// Verify connection logic
 transporter.verify(function (error, success) {
     if (error) {
         console.log("❌ Email Server Error: ", error);
     } else {
-        console.log("✅ Email Server is ready to send messages");
+        console.log("✅ Email Server is ready to send OTPs");
     }
 });
 
