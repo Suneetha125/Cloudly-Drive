@@ -225,11 +225,14 @@ const transporter = nodemailer.createTransport({
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     },
-    // THIS SECTION IS THE FIX FOR ENETUNREACH
-    family: 4, // Forces Node.js to use IPv4 only
-    connectionTimeout: 10000, // 10 seconds
-    greetingTimeout: 10000,
-    socketTimeout: 10000
+    // --- THE ULTIMATE CLOUD FIX ---
+    family: 4,           // Force IPv4
+    connectionTimeout: 20000, // Increase to 20 seconds
+    greetingTimeout: 20000,
+    socketTimeout: 20000,
+    tls: {
+        rejectUnauthorized: false // Helps with some cloud network certificate issues
+    }
 });
 
 // Verify connection
