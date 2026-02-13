@@ -219,21 +219,23 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.S3_SECRET_KE
 
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true, // Use SSL
+    port: 587,
+    secure: false, // Must be false for port 587
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     },
-    // --- THE FIX FOR ENETUNREACH ---
-    // This forces the connection to use IPv4 instead of IPv6
-    family: 4 
+    // THIS SECTION IS THE FIX FOR ENETUNREACH
+    family: 4, // Forces Node.js to use IPv4 only
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 10000,
+    socketTimeout: 10000
 });
 
-// Verify connection logic
+// Verify connection
 transporter.verify(function (error, success) {
     if (error) {
-        console.log("❌ Email Server Error: ", error);
+        console.log("❌ Email Server Error: ", error.message);
     } else {
         console.log("✅ Email Server is ready to send OTPs");
     }
