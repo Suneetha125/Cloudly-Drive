@@ -1,9 +1,10 @@
+// 
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { 
   FolderPlus, Upload, Trash2, FileText, Search, LogOut, Folder, ChevronRight, Sun, Moon, 
-  MoreVertical, Share2, Users, Star, Shield, LayoutGrid, Eye, Move, UserX, Fingerprint, Clock
+  MoreVertical, Share2, Users, Star, Shield, LayoutGrid, Eye, Move, UserX, Fingerprint
 } from 'lucide-react';
 
 const API = "https://cloudly-dj52.onrender.com/api"; 
@@ -58,15 +59,14 @@ const Drive = () => {
             await axios.post(`${API}/upload/chunk`, fd, authConfig());
             setUploadProgress(p => ({ ...p, [file.name]: Math.round(((i + 1) / total) * 100) }));
         }
-        await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId: init.data.uploadId, folderId: currentFolder?._id, isVault: activeTab === 'vault', mimeType: file.type }, authConfig());
+        await axios.post(`${API}/upload/complete`, { fileName: file.name, uploadId: init.data.uploadId, folderId: currentFolder?._id || "null", isVault: activeTab === 'vault', mimeType: file.type }, authConfig());
         fetchData();
     };
 
     const handleUpload = async (e) => {
         const files = Array.from(e.target.files);
-        for (let i = 0; i < files.length; i += 3) {
-            const batch = files.slice(i, i + 3);
-            await Promise.all(batch.map(f => processUpload(f)));
+        for (let i = 0; i < files.length; i += 3) { // 3 at a time
+            await Promise.all(files.slice(i, i + 3).map(f => processUpload(f)));
         }
     };
 
@@ -79,7 +79,6 @@ const Drive = () => {
 
     return (
         <div style={{ minHeight: '100vh', backgroundColor: theme.bg, color: theme.text, display: 'flex' }} onClick={() => {setActiveMenu(null); setProfileOpen(false)}}>
-            {/* Sidebar */}
             <aside style={{ width: 260, borderRight: `1px solid ${theme.border}`, padding: 25, background: theme.card, display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <h1 style={{fontSize:22, fontWeight:'bold', marginBottom:30}}>Cloudly</h1>
                 <div style={activeTab==='files'?styles.navAct:styles.nav} onClick={()=>{setActiveTab('files'); setIsVaultUnlocked(false); setCurrentFolder(null); setPath([]);}}><LayoutGrid size={20}/> My Drive</div>
@@ -112,7 +111,7 @@ const Drive = () => {
                     <span onClick={()=>{setCurrentFolder(null); setPath([]);}} style={{cursor:'pointer'}}>Root</span>
                     {path.map((p, i) => <span key={p._id} onClick={()=>{const n=path.slice(0,i+1); setPath(n); setCurrentFolder(p);}} style={{cursor:'pointer'}}> <ChevronRight size={16}/> {p.name}</span>)}
                     <div style={{marginLeft:'auto', display:'flex', gap:10}}>
-                        <button onClick={async ()=>{const n=prompt("Name?"); if(n) await axios.post(`${API}/folders`, {name:n, parentFolder:currentFolder?._id, isVault:activeTab==='vault'}, authConfig()); fetchData();}} style={{...styles.btnWhite, display:'flex', gap:8}}><FolderPlus size={18}/> New Folder</button>
+                        <button onClick={async ()=>{const n=prompt("Folder Name?"); if(n) await axios.post(`${API}/drive/folders`, {name:n, parentFolder:currentFolder?._id || "null", isVault:activeTab==='vault'}, authConfig()); fetchData();}} style={{...styles.btnWhite, display:'flex', gap:8}}><FolderPlus size={18}/> New Folder</button>
                         <label style={styles.btnBlue}><Upload size={18}/> Upload <input type="file" hidden multiple webkitdirectory="true" onChange={handleUpload}/></label>
                     </div>
                 </div>
@@ -141,7 +140,7 @@ const Drive = () => {
                             {activeMenu === f._id && (
                                 <div style={{...styles.drop, background:theme.card, border:`1px solid ${theme.border}`}}>
                                     <div onClick={async ()=>{const r=await axios.get(`${API}/drive/preview/${f._id}`, authConfig()); setPreviewFile(r.data.url)}}><Eye size={14}/> Preview</div>
-                                    <div onClick={()=>setShareModal(f)}><Share2 size={14}/> Manage Access</div>
+                                    <div onClick={()=>setShareModal({...f, type:'file'})}><Share2 size={14}/> Manage Access</div>
                                     <div onClick={()=>handleAction(f._id, 'file', 'star', !f.isStarred)}><Star size={14}/> Star</div>
                                     <div onClick={()=>{const t=prompt("Folder ID or 'vault' or 'root'"); if(t) handleAction(f._id, 'file', 'move', t)}}><Move size={14}/> Move</div>
                                     <div onClick={()=>handleAction(f._id, 'file', 'move', 'trash')} style={{color:'orange'}}><Trash2 size={14}/> Trash</div>
@@ -153,7 +152,7 @@ const Drive = () => {
                 </div>
             </main>
 
-            {/* Modals */}
+            {/* VAULT MODAL */}
             {vaultModal.open && (
                 <div style={styles.overlay} onClick={()=>setVaultModal({open:false})}>
                     <div style={{...styles.modalSmall, background:theme.card}} onClick={e=>e.stopPropagation()}>
@@ -163,28 +162,29 @@ const Drive = () => {
                                 <h3>Private Vault</h3>
                                 <input type="password" id="vpin" style={styles.pinInp} placeholder="PIN" maxLength={4}/>
                                 <button onClick={async ()=>{ const p=document.getElementById('vpin').value; const r=await axios.post(`${API}/vault/unlock`, {pin:p}, authConfig()); if(r.data.setup) alert("PIN Set!"); setIsVaultUnlocked(true); setActiveTab('vault'); setVaultModal({open:false}); }} style={styles.btnBlue}>Unlock</button>
-                                <p onClick={async ()=>{ await axios.post(`${API}/vault/reset-request`, {}, authConfig()); setVaultModal({open:true, step:'reset'}); }} style={{fontSize:12, marginTop:15, cursor:'pointer', color:'#3b82f6'}}>Forgot PIN? Reset via Email</p>
+                                <p onClick={async ()=>{ await axios.post(`${API}/vault/reset-request`, {}, authConfig()); setVaultModal({open:true, step:'reset'}); }} style={{fontSize:12, marginTop:15, cursor:'pointer', color:'#3b82f6'}}>Reset PIN via Email</p>
                             </>
                         ) : (
                             <>
-                                <h3>Reset Vault PIN</h3>
+                                <h3>Reset PIN</h3>
                                 <input id="rotp" placeholder="OTP from Email" style={{...styles.pinInp, fontSize:14, letterSpacing:0}}/>
                                 <input id="rpin" placeholder="New 4-Digit PIN" maxLength={4} style={styles.pinInp}/>
-                                <button onClick={async ()=>{ await axios.post(`${API}/vault/reset-confirm`, {otp: document.getElementById('rotp').value, newPin: document.getElementById('rpin').value}, authConfig()); setVaultModal({open:true, step:'unlock'}); alert("PIN Reset!"); }} style={styles.btnBlue}>Update PIN</button>
+                                <button onClick={async ()=>{ await axios.post(`${API}/vault/reset-confirm`, {otp: document.getElementById('rotp').value, newPin: document.getElementById('rpin').value}, authConfig()); setVaultModal({open:true, step:'unlock'}); alert("PIN Updated!"); }} style={styles.btnBlue}>Update PIN</button>
                             </>
                         )}
                     </div>
                 </div>
             )}
 
+            {/* SHARE MODAL */}
             {shareModal && (
                 <div style={styles.overlay} onClick={()=>setShareModal(null)}>
                     <div style={{...styles.modalSmall, background:theme.card}} onClick={e=>e.stopPropagation()}>
                         <h3 style={{marginBottom:15}}>Manage Access</h3>
                         <input id="semail" placeholder="User Email" style={{...styles.pinInp, fontSize:14, letterSpacing:0}}/>
-                        <select id="srole" style={{padding:10, width:'100%', marginBottom:10, borderRadius:8}}><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
-                        <select id="shours" style={{padding:10, width:'100%', marginBottom:10, borderRadius:8}}><option value="0">Unlimited</option><option value="1">1 Hour</option><option value="24">24 Hours</option></select>
-                        <button onClick={async ()=>{ await axios.post(`${API}/files/share`, {id:shareModal._id, type: shareModal.fileName ? 'file':'folder', email: document.getElementById('semail').value, role: document.getElementById('srole').value, hours: document.getElementById('shours').value}, authConfig()); setShareModal(null); alert("Shared!"); }} style={{...styles.btnBlue, width:'100%'}}>Save Permissions</button>
+                        <select id="srole" style={{padding:10, width:'100%', marginBottom:10}}><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
+                        <select id="shours" style={{padding:10, width:'100%', marginBottom:10}}><option value="0">Unlimited</option><option value="1">1 Hour</option><option value="24">24 Hours</option></select>
+                        <button onClick={async ()=>{ await axios.post(`${API}/files/share`, {id:shareModal._id, type: shareModal.type, email: document.getElementById('semail').value, role: document.getElementById('srole').value, hours: document.getElementById('shours').value}, authConfig()); setShareModal(null); alert("Shared!"); }} style={{...styles.btnBlue, width:'100%'}}>Save Permissions</button>
                     </div>
                 </div>
             )}
