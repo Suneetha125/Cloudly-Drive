@@ -1,5 +1,5 @@
 # ☁️ Cloudly Pro: Enterprise-Grade Cloud Storage
-
+<img width="693" height="650" alt="Screenshot 2026-02-14 194740" src="https://github.com/user-attachments/assets/f8884b7b-b343-4570-8e5f-a8977e89a896" />
 **Cloudly Pro** is a high-performance, full-stack cloud storage platform designed to mirror the functionality and UI/UX of industry leaders like Google Drive. It features a robust MERN architecture integrated with official Supabase storage, biometric handshake simulations, and optimized parallel data transfer protocols.
 
 [![Live Demo](https://img.shields.io/badge/Live-Demo-brightgreen?style=for-the-badge&logo=vercel)](https://cloudly-drive.vercel.app)
@@ -24,7 +24,8 @@ Implemented a custom **Multi-threaded Chunking Algorithm**. Large files are spli
 *   **Seamless Authentication:** Streamlined registration and login flow powered by JWT for stateless authorization and salted Bcrypt hashing for credential security.
 *   **Private Vault:** A secondary security layer requiring a unique 4-digit PIN and featuring a **Biometric (Fingerprint) Handshake** simulation to protect sensitive assets.
 *   **Account Termination Protocol:** Integrated a secure account deletion feature that recursively wipes user metadata from MongoDB and physical objects from Supabase buckets to ensure total privacy.
-
+time feedback on a **30GB user quota**.
+<img width="500" height="500" alt="Screenshot 2026-02-14 195009" src="https://github.com/user-attachments/assets/08bf99ab-0923-4bb1-a541-b35cf7886cfa" />
 ### 3. Advanced File Management
 *   **Recursive Data Integrity:** Engineered a deletion algorithm that ensures when a folder is removed, all nested sub-folders and physical files are purged from the cloud storage to prevent "orphan data" and storage leaks.
 *   **Movable Architecture:** Seamlessly move files and folders across the directory tree, into the Private Vault, or to the Trash sidebar via a standardized action API.
@@ -34,10 +35,8 @@ Implemented a custom **Multi-threaded Chunking Algorithm**. Large files are spli
 ### 4. Modern UI/UX Design
 *   **3-Column Architecture:** Industry-standard layout featuring a global sidebar, a breadcrumb-navigated grid explorer, and a persistent navigation header.
 *   **Dark/Light Mode:** Full theme support with automatic persistence using `localStorage` to match user OS preferences.
-*   **Real-time Storage Tracking:** Visual progress bars providing real-time feedback on a **30GB user quota**.
-
+*   **Real-time Storage Tracking:** Visual progress bars providing real-
 ---
-
 ## ⚙️ Installation & Setup
 
 ### 1. Backend Configuration
