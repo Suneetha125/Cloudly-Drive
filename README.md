@@ -1,8 +1,7 @@
 ☁️ Cloudly Pro: Enterprise-Grade Cloud Storage
 Cloudly Pro is a high-performance, full-stack cloud storage platform designed to mirror the functionality and UI/UX of industry leaders like Google Drive. It features a robust MERN architecture integrated with S3-compatible cloud storage, biometric security, and optimized data transfer protocols.
-![alt text](https://img.shields.io/badge/Live-Demo-brightgreen?style=for-the-badge&logo=vercel)
-
-![alt text](https://img.shields.io/badge/Backend-API-blue?style=for-the-badge&logo=render)
+[![Live Demo](https://img.shields.io/badge/Live-Demo-brightgreen?style=for-the-badge&logo=vercel)](https://cloudly-drive.vercel.app)
+[![Backend API](https://img.shields.io/badge/Backend-API-blue?style=for-the-badge&logo=render)](https://cloudly-dj52.onrender.com)
 🛠️ Tech Stack
 Frontend: React.js, Lucide-React (Icons), Axios, Inter Font UI.
 Backend: Node.js, Express.js.
